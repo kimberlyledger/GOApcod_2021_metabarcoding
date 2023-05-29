@@ -143,6 +143,14 @@ join_long <- join_long %>%
 levels(join_long$taxon)
 ```
 
+make a table with taxons and total read counts 
+```{r}
+join_long %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+```
+
 
 
 # now let's check out data! 

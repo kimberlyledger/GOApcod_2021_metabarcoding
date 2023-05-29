@@ -216,6 +216,30 @@ levels(join_long$taxon)
     ## [41] "Scombridae"                  "Syngnathus"                 
     ## [43] "Ammodytes"
 
+make a table with taxons and total read counts
+
+``` r
+join_long %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+```
+
+    ## # A tibble: 43 × 2
+    ##    taxon           total_reads
+    ##    <fct>                 <dbl>
+    ##  1 Gadus              3757232.
+    ##  2 Clupea pallasii    2562570.
+    ##  3 Oncorhynchus       2451936.
+    ##  4 Hexagrammos        1383299.
+    ##  5 Ammodytes          1339193.
+    ##  6 Gadidae            1021244.
+    ##  7 Pholis laeta        850062.
+    ##  8 Anoplarchus         610703.
+    ##  9 Cottidae            447987.
+    ## 10 Xiphister           410359.
+    ## # ℹ 33 more rows
+
 # now let’s check out data!
 
 since reads were decontaminated it doesn’t make sense to plot positive
@@ -225,7 +249,7 @@ decontamination process.
 
 ## any sequences in field blanks?
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-13-1.png)<!-- -->
 
 well, unfortunately only three field blanks were taken during this
 entire survey.
@@ -309,7 +333,7 @@ ggplot(temp, aes(x=Index, y = total_reads, color = sample_type)) +
          geom_point(alpha = 0.5)
 ```
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-15-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-16-1.png)<!-- -->
 
 plot total reads by DNA concentration for samples
 
@@ -320,7 +344,7 @@ temp %>%
          geom_point(alpha = 0.5)
 ```
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-16-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-17-1.png)<!-- -->
 
 hmm.. perhaps i should flag samples that have no reads post
 decontamination but have a DNA concentration of 2ng/ul or greater??
@@ -359,7 +383,7 @@ alright, let me plot the legend for reference
     ## 
     ##     combine
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-18-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-19-1.png)<!-- -->
 
 okay, now i will summarize samples by location (remember part of the
 decontamination steps included removing outlier site replicates)
@@ -401,7 +425,7 @@ location_summary %>%
 
     ## Warning: Removed 1333 rows containing missing values (`position_stack()`).
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-20-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-21-1.png)<!-- -->
 
 note the locations without columns is not missing data, there were not
 samples taken from locations of those values and my first couple
