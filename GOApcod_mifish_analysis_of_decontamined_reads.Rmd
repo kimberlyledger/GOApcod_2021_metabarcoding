@@ -30,7 +30,7 @@ metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID)
 
 read in taxonomic identification
 - this is a table i created that integrated INSECT and blastn classifications
-- i removed a few mammals and no rank ASVs 
+- i removed a few mammals and no rank ASVs --- GO BACK AND KEEP MARINE MAMMALS? 
 ```{r}
 taxon <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_COMBINED.csv") %>%
   rename(ASV = representative)
