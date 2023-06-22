@@ -327,8 +327,174 @@ asv_table_filter3 <- asv_table_filter2 %>%
   filter(!ASV %in% asvs_to_remove)
 ```
 
+######################################
+
 
 # 4. Site Occupancy Modeling 
+
+
+```{r}
+sites <- metadata %>%
+  dplyr::select(Sample_ID, location1)
+
+rep_table <- asv_table_filter3 %>%
+  left_join(sites, by = "Sample_ID") %>%
+  arrange(location1)
+```
+
+```{r}
+library(stringi)
+tmp.df <- rep_table %>%
+  filter(location1 == 1) # comment this to test the ASV-centric df
+```
+
+```{r}
+ # format the dataframe appropriately
+wide.loc.frame <- tmp.df %>%
+  ungroup() %>%  
+  mutate(reads = ifelse(reads > 0, 1, 0)) %>% # change counts to presence/absence
+    dplyr::select(ASV, Sample_ID, reads) %>%
+    group_by(ASV, Sample_ID, reads) %>%
+    unique() %>% # eliminate duplicate entries for the same ASV and sample (these seem to be a thing for aquaF2)
+    pivot_wider(names_from = Sample_ID, values_from = reads) %>%
+  ungroup()
+```
+
+
+```{r}
+library(rstan)
+
+ # format must be dataframe, not tibble for converting rownames properly
+  wide.loc.frame <- data.frame(wide.loc.frame)
+
+# helper function for maintaining rownames in matrix format
+  matrix.please <- function(x) {
+    m<-as.matrix(x[,-1])
+    rownames(m)<-x[,1]
+    m
+  }
+  
+  # convert df to matrix
+  wide.loc.matrix <- matrix.please(wide.loc.frame)
+
+n_replicates = ncol(wide.loc.matrix)
+
+# then call the Stan code to work on the dataset we created above. 
+# reformatting our data from above to match the Stan code's inputs
+testData <<- 
+    data.frame(K = n_replicates,   #trials per species (row)
+               N = rowSums(wide.loc.matrix),  #detections per species
+               z = ifelse(rowSums(wide.loc.matrix) > 0, 1, 0)  #was it ever detected at this site? (integer that helps estimate psi)
+    )
+  
+  mySOMmodel <- stan(file = "Stan_SOM_demo.stan",
+                     data = list(
+                       S = nrow(testData),
+                       K = testData$K,
+                       N = testData$N,
+                       z = ifelse(testData$N > 0, 1, 0)
+                     ),
+                     chains = 4,   #number of chains
+                     iter = 5000   #number of iterations per chain
+  )
+  
+```
+
+this plot doesn't run because of problem with package installation
+```{r}
+# library(tidybayes)
+# 
+# tmp.plot <- broom::tidy(mySOMmodel) %>%
+#   filter(!term %in% c("psi", "p11", "p10")) %>%
+#   arrange(desc(estimate)) %>%
+#   ggplot(aes(x = reorder(term, estimate), y = estimate)) +
+#   geom_point() +
+#   theme(
+#     axis.text.x = element_blank()
+#   )
+# 
+# print(tmp.plot)
+```
+
+
+```{r}
+library(bayesplot)
+
+  p1 <- mcmc_areas(mySOMmodel, 
+                   pars = c("psi", "p11", "p10"))
+  p2 <- mcmc_intervals(mySOMmodel, 
+                       regex_pars = "Occupancy_prob")
+  
+plot(p1)
+plot(p2)
+```
+
+```{r}
+#Fit Summary
+#fit_summary <- extract(mySOMmodel)
+
+
+#, probs = c(0.025, 0.975))$summary 
+```
+
+
+
+```{r}
+# also need to save the output in a form that connects the ASVs to the occupancy estimates
+  
+# grab the name of the ASVs
+asvs <- data.frame(wide.loc.frame[,1]) %>%
+  dplyr::rename(ASV = wide.loc.frame...1.)
+
+asv.sodm.output <- as.array(mySOMmodel, pars = c("psi", "p11", "p10")) %>%
+  as.data.frame() %>%
+  dplyr::bind_cols(., asvs) 
+
+  
+# combine the ASV names with the sodm output
+asv.sodm.output <- tidy(mySOMmodel) %>%
+  filter(!term %in% c("psi", "p11", "p10")) %>%
+  dplyr::bind_cols(., asvs) 
+  
+  # write that to a CSV for now
+ # asv.sodm.output %>%
+ #   write_csv(paste0("csv_outputs/SODM/",loc,"/",site,"_",loc,"_ASV_SODM_5Kiter.csv"))
+```
+
+
+
+
+
+
+
+```{r}
+# must have run modelText prior to this working
+write.table(modelText, "Stan_SOM_allPossibilities.stan", row.names = F, quote = F, col.names = F)
+SOMmodel_0_10_detections <- stan(file = "Stan_SOM_allPossibilities.stan", 
+                                   data = list(
+                                     S = nrow(testData),
+                                     K = testData$K,
+                                     N = testData$N,
+                                     z = ifelse(testData$N > 0, 1, 0)
+                                   ), 
+                                   chains = 4,   #number of chains
+                                   iter = 100000   #number of iterations per chain
+  )
+  
+  # print the output of that plot
+  # plot.occu <- mcmc_intervals(SOMmodel_0_10_detections, 
+  #                             regex_pars = "Occupancy_prob") +
+  #   xlab("Probability of Occupancy") +
+  #   ylab("Number of detections (from 0 to 10 out of 10)")
+  # 
+  # ggsave(paste0("pdf_outputs/SODM/occupancy_tax_only_",loc,"_",site,"_5kiter.pdf"))
+```
+
+
+
+
+
+my make-shift attempt at this...  
 
 **need to come back and figure out how to do this for real...**
 
