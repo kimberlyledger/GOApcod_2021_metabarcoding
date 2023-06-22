@@ -19,7 +19,12 @@ library(fitdistrplus) #for fitdist()
 
 the data i am starting with is the ASV table output from DADA2 pipeline in my sequence_filtering.Rmd in the eDNA_metabarcoding folder
 ```{r}
-asv_table <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/ASVtable.csv") %>%
+#NOAA VM
+#asv_table <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/ASVtable.csv") %>%
+#  rename(Sample_ID = X)
+
+#my mac
+asv_table <- read.csv("data/ASVtable.csv") %>%
   rename(Sample_ID = X)
 
 asv_table$Sample_ID <- as.factor(asv_table$Sample_ID)
@@ -32,7 +37,11 @@ subtract the proportion of reads that jumped into the control samples from each 
 
 we need sample metadata to do this... 
 ```{r}
-metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230515.csv")
+#NOAA VM
+#metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230515.csv")
+
+#my mac
+metadata <- read.csv("data/GOA2021_metadata_20230515.csv")
 
 #illumina output changed "_" to "-"
 metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
@@ -138,7 +147,7 @@ which samples are removed because of the 5%/1000 reads threshold??
 samples_removed <- asv_table_filter1 %>%
   filter(Sample_ID %in% outlierIDs) %>%
   pivot_wider(names_from = "ASV", values_from = "reads")
-samples_removed
+head(samples_removed)
 ```
 
 plot them
@@ -175,7 +184,7 @@ which samples are removed because of the 5%/1000 reads threshold??
 samples_removed <- asv_table_filter1 %>%
   filter(Sample_ID %in% outlierIDs) %>%
   pivot_wider(names_from = "ASV", values_from = "reads")
-samples_removed
+head(samples_removed)
 ```
 
 plot them
@@ -402,18 +411,19 @@ testData <<-
 
 this plot doesn't run because of problem with package installation
 ```{r}
-# library(tidybayes)
-# 
-# tmp.plot <- broom::tidy(mySOMmodel) %>%
-#   filter(!term %in% c("psi", "p11", "p10")) %>%
-#   arrange(desc(estimate)) %>%
-#   ggplot(aes(x = reorder(term, estimate), y = estimate)) +
-#   geom_point() +
-#   theme(
-#     axis.text.x = element_blank()
-#   )
-# 
-# print(tmp.plot)
+library(tidybayes)
+library(broom)
+
+tmp.plot <- broom::tidy(mySOMmodel) %>%
+  filter(!term %in% c("psi", "p11", "p10")) %>%
+  arrange(desc(estimate)) %>%
+  ggplot(aes(x = reorder(term, estimate), y = estimate)) +
+  geom_point() +
+  theme(
+    axis.text.x = element_blank()
+  )
+
+print(tmp.plot)
 ```
 
 
