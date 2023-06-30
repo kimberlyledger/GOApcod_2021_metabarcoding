@@ -11,10 +11,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This script is an updated version of my decontamination pipeline for the GOA pcod 2021 samples. 
 
-Inputs: This code starts with the ASV table output from DADA2 pipeline in my sequence_filtering.Rmd (eDNA_metabarcoding R project)
-Outputs: We will end up with a decontaminated ASV table that can be used for additional analyses.
+Inputs: This code starts with the ASV table output from DADA2 pipeline in my sequence_filtering.Rmd (eDNA_metabarcoding R project). We also use sample metadata and a preliminary taxonomic id for the ASVs in this code.  
 
-Decontamination will involve **4 steps**
+Outputs: We will end up with a decontaminated ASV table that can be used for additional analyses.  
+
+Decontamination will involve **5 steps**
 **1. Estimate tag-jumping** - There is the potential for some barcodes (that are used to identify the individual samples in a MiSeq run) to be assigned to the wrong sample. To estimate how many reads did this, we can use our positive control (which has a known composition and is extremely unlikely to be present in the environmental samples). What we will do is subtract the proportion of reads observed in the control samples from each environmental sample. The output will be a dataset with the same number of samples and ASVs as before, but with fewer reads of certain sequences (ASVs). 
 **2. Discard PCR replicates with low numbers of reads** - Sometimes PCR replicates have low read numbers, and therefore will have skewed relative read proportions. These should be removed.  To do this we will fit the number of reads assigned to each sample to a normal distribution and discard those samples with a **97.5%** probability of not fitting in that distribution. The output will be a dataset with fewer samples and potentially fewer ASVs.
 **3. Account for contaminants in positive and negative controls** - We can use the reads that show up where we know they shouldn't be (i.e. the controls) to further clean up the dataset. Each ASV found in the controls at a higher abundance than in replicates from environmental samples will be removed. The output will be a dataset with the same number of samples as before but with fewer ASVs.
@@ -26,38 +27,67 @@ Decontamination will involve **4 steps**
 
 load libraries 
 ```{r}
-#library(fitdistrplus) #for fitdist()
 library(stringi)
 library(rstan)
 library(broom)
 library(tibble)
-#library(bayesplot)
-library(tidyverse)
 library(vegan)
+library(reshape)
+library(tidyverse)
+library(dplyr)
 ```
 
 load ASV table and metadata
 ```{r}
 asv_table <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/ASVtable.csv") %>%
-  rename(Sample_ID = X)
+  dplyr::rename(Sample_ID = X)
 
 asv_table$Sample_ID <- as.factor(asv_table$Sample_ID)
 
-metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230515.csv")
+metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
 
 #illumina output changed "_" to "-"
 metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
 ```
 
-starting number of ASV's = 1859
-starting number of samples = 1014 (enviro samples, positives, and negatives)
+let's start by taking a closer looks at our dataset 
 
-break down of the number of environmental samples, positives, negatives
 ```{r}
-rep_summary <- metadata %>%
+## number of ASVs 
+sum(grepl("ASV", colnames(asv_table)))  
+
+## number of samples in ASV table 
+nrow(asv_table)
+```
+
+```{r}
+## break down of the number of environmental samples, positives, negatives
+summary <- metadata %>%
   group_by(sample_type) %>%
-  summarize(starting_reps = n())
-rep_summary
+  summarize(starting_reps = n()) 
+
+summary[6,1] <- "Total"
+summary[6,2] <- sum(summary$starting_reps, na.rm = T)
+
+summary
+```
+
+good. the number of samples in the asv file and the metadata match! 
+
+how many sites, biological replicates, and pcr replicates are we starting with for our **environmental samples**?
+```{r}
+metadata %>%
+  filter(sample_type == "sample") %>%
+  distinct(location1) %>%
+  summarise(SamplingSites = n())
+
+unique_replicates_starting <- metadata %>%
+  group_by(location1) %>%
+  summarise(n_biologial_reps = n_distinct(biological_replicate),
+            n_pcr_reps_per_biorep = n_distinct(pcr_replicate),
+            n_pcr_reps_total = n_biologial_reps*n_pcr_reps_per_biorep)
+
+unique_replicates_starting
 ```
 
 
@@ -124,7 +154,7 @@ clean up the table by removing columns no longer needed
 ```{r}
 asv_table_filter1 <- indexhop_table %>%
   dplyr::select(Sample_ID, sample_type, ASV, reads_IndexHop_removed) %>%
-  rename(reads = reads_IndexHop_removed)
+  dplyr::rename(reads = reads_IndexHop_removed)
 head(asv_table_filter1)
 ```
 
@@ -143,7 +173,7 @@ prop_removed_1 <- prop_asvs_in_positives %>%
 head(prop_removed_1)
 ```
 
-apart from ASV16 which is for sturgeon (the positive control) and a few ASVs at about 2.5%, the max proportion of reads removed is just over 1% 
+ASV16 is sturgeon (the positive control). 
 
 
 # 2. Discard PCR replicates with low numbers of reads 
@@ -166,26 +196,19 @@ all_reads %>%
 
 fit a normal distribution
 ```{r}
-#fit <- fitdist(all_reads$ReadsPerSample, "gamma", lower=c(0,0), start=list(scale=1,shape=1))
-
 fit <- MASS::fitdistr(all_reads$ReadsPerSample, "normal")
-
-
-#all_reads %>%  
-#  mutate(prob = pgamma(ReadsPerSample, shape = fit$estimate[[2]], scale = fit$estimate[[1]], lower.tail = TRUE,
-#       log.p = FALSE)) -> all_reads
 
 all_reads %>%  
   mutate(prob = pnorm(all_reads$ReadsPerSample, fit$estimate[[1]], fit$estimate[[2]])) -> all_reads
 ```
 
-identify and remove the outliers - parameters used in gruinard_decon
+identify and remove the outliers
 ```{r}
 low_dist_probability_cutoff <- 0.025
 minimum_read_cutoff <- 1000
 
 outliers <- all_reads %>% 
-  filter(prob < low_dist_probability_cutoff  | ReadsPerSample < minimum_read_cutoff) # changed to 0.05 to save the two samples
+  filter(prob < low_dist_probability_cutoff  | ReadsPerSample < minimum_read_cutoff)
 outlierIDs <- outliers$Sample_ID
 ```
 
@@ -209,8 +232,12 @@ replicates_removed_2 %>%
 ggplot(aes(x=Sample_ID, y=count, fill=ASV)) +
   geom_bar(stat = "identity") + 
     theme_bw() + 
+   labs(
+    y = "sequencing reads",
+    x = "sample ID",
+    title = "samples with low read numbers")  +
   theme(
-    axis.text.x = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
     legend.position = "none",
     legend.title = element_blank()
   )  
@@ -234,7 +261,7 @@ removed_2_summary
 
 join to summary table 
 ```{r}
-rep_summary %>%
+summary %>%
   left_join(removed_2_summary)
 ```
 
@@ -261,6 +288,7 @@ tempA <- asv_table_with_sample_type %>%
   summarize(TotalReadsPerASV = sum(reads)) %>%
   arrange(ASV)
 ```
+
 proportion of read
 ```{r}
 tempB <-  asv_table_with_sample_type %>%
@@ -279,36 +307,12 @@ tempC <- tempA %>%
   pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV", "max_prop", "mean_prop"))
 ```
 
-what ASVs have greater read numbers in positives than samples? 
-```{r}
-tempC %>%
-  filter(TotalReadsPerASV_positive_control > TotalReadsPerASV_sample)
-```
-
-what ASVs have greater read numbers in extraction blanks than samples? 
-```{r}
-tempC %>%
-  filter(TotalReadsPerASV_extraction_blank > TotalReadsPerASV_sample)
-```
-
-
-what ASVs have greater read numbers in PCR blanks than samples? 
-```{r}
-tempC %>%
-  filter(TotalReadsPerASV_PCR_blank > TotalReadsPerASV_sample)
-```
-
-what ASVs have greater read numbers in field blanks than samples? 
-```{r}
-tempC %>%
-  filter(TotalReadsPerASV_field_blank > TotalReadsPerASV_sample)
-```
-
-remove any ASV that has a *total number of reads* greater in the controls than in real samples.
-
+what ASVs have greater read numbers in positives or extraction blanks or pcr blanks or field blanks than samples? then remove any ASV that has a *total number of reads* greater in the controls than in real samples.
 ```{r}
 tempD <- tempC %>%
   filter(TotalReadsPerASV_positive_control > TotalReadsPerASV_sample | TotalReadsPerASV_extraction_blank > TotalReadsPerASV_sample | TotalReadsPerASV_PCR_blank > TotalReadsPerASV_sample | TotalReadsPerASV_field_blank > TotalReadsPerASV_sample)
+
+tempD
 
 asvs_to_remove <- tempD$ASV  #31 ASVs removed (from original count)
 ```
@@ -389,7 +393,7 @@ sink()
 the first step is to format my data for the stan model - i need site information so will start by getting that from the metadata
 ```{r}
 sites <- metadata %>%
-  dplyr::select(Sample_ID, extraction_ID, pcr_replicate, location1)
+  dplyr::select(Sample_ID, biological_replicate, pcr_replicate, location1)
 
 rep_table <- asv_table_filter3 %>%
   left_join(sites, by = "Sample_ID") %>%
@@ -399,12 +403,12 @@ rep_table <- asv_table_filter3 %>%
 occu_df <- rep_table %>%
   ungroup() %>%  
   mutate(reads = ifelse(reads > 0, 1, 0)) %>% # change counts to presence/absence
-  dplyr::select(ASV, location1, extraction_ID, pcr_replicate, reads) %>%
-  group_by(ASV, location1, extraction_ID) %>%
+  dplyr::select(ASV, location1, biological_replicate, pcr_replicate, reads) %>%
+  group_by(ASV, location1, biological_replicate) %>%
   summarise(K = n(),  #count the number of rows for K 
             N = sum(reads)) %>% #sum the detections (now in reads column) for N 
-  rename(Site = location1,
-         BiologicalRep = extraction_ID) %>% ## just renaming so that it matches the naming used in the stan model
+  dplyr::rename(Site = location1,
+         BiologicalRep = biological_replicate) %>% ## just renaming so that it matches the naming used in the stan model
   separate(ASV, into = c(NA, "Species"), sep = 3, remove = FALSE)
 
 occu_df$Species <- as.integer(occu_df$Species) #convert ASV to an integer
@@ -420,7 +424,7 @@ pattern.of.replication <- rep_table %>%
   ungroup() %>%  
   mutate(reads = ifelse(reads > 0, 1, 0)) %>% # change counts to presence/absence
   filter(!grepl("-2-", Sample_ID)) %>%    ## the extraction replicates are messing thing up right now... i need to code this better in the metadata/etc eventually 
-  dplyr::select(location1, extraction_ID, pcr_replicate, ASV, reads) %>%
+  dplyr::select(location1, biological_replicate, pcr_replicate, ASV, reads) %>%
   pivot_wider(names_from = pcr_replicate, values_from = reads) %>%
   mutate(ndetections = A + B + C) %>%
   group_by(location1, ndetections, ASV) %>%
@@ -482,12 +486,12 @@ temp.df <- occu_df_subset
        
   myHierarchicalStanResults <- tidy(tibble(as.data.frame(myHierarchicalModel)))
   
-  write_rds(myHierarchicalStanResults, "occupancy_output_20230629.rds")  ## not that this version actually takes very long to rerun but anyways... 
+  #write_rds(myHierarchicalStanResults, "occupancy_output_20230629.rds")  ## not that this version actually takes very long to rerun but anyways... 
 ```
 
 
 ```{r}
-#myHierarchicalStanResults <- read_rds("occupancy_output_20230629.rds")
+myHierarchicalStanResults <- read_rds("occupancy_output_20230629.rds")
 
   ## occupancy probabilities 
   myHierarchicalStanResults_occu <- myHierarchicalStanResults %>%
@@ -519,7 +523,6 @@ discard <- site.asv_occupancy_probs %>%
   filter(max_Occupancy_prob < 0.8)
 ```
 
-this will cut down on my ASVs across sites A LOT! - which i think is a good thing... 
 
 ```{r}
 asv_table_filter4 <- rep_table %>% 
@@ -527,60 +530,97 @@ asv_table_filter4 <- rep_table %>%
   filter(loc.asv %in% keepers$filter_id)
 ```
 
-note: samples that are extraction replicates are now back in the data set. i'll need to make sure they are filtered correctly at some point... 
-
 how many unique ASVs are now in the data set? 
 ```{r}
 length(unique(asv_table_filter4$ASV)) 
 ```
 
-1828-209 = 1619 ASVs removed. that's ~88%... 
+now i want to quickly check that none of the remaining ASVs obviously should not be there (i.e. human, dog, etc...)
+```{r}
+## for this i will use the insect taxonomy output (even though i don't think i want to use that for later analyses)
 
-### maybe add a step here that joins the dataset to taxonomy and remove any additional ASVs (such as from mammals, if they remain?)
+taxonomy <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_full_taxonomy_insect.csv") %>%
+  select(!X) %>%
+  dplyr::rename(ASV = representative)
 
+my_asvs <- unique(asv_table_filter4$ASV)
+
+my_taxon_assignments <- taxonomy %>%
+  filter(ASV %in% my_asvs)
+
+my_taxon_assignments %>%
+  group_by(class) %>%
+  summarise(count = n())
+```
+
+alrighty, let me get rid of the birds and mammals... but note that some of these are probably legit sequences (i.e. seals, otters, bear, deer)  
+
+```{r}
+remove_4 <- my_taxon_assignments %>%
+  filter(!class == "Actinopteri")
+
+asv_table_filter4B <- asv_table_filter4 %>%
+  filter(!ASV %in% remove_4$ASV)
+```
+
+how many unique ASVs are now in the data set? 
+```{r}
+length(unique(asv_table_filter4B$ASV)) 
+```
 
 # 5. Dissimilarity between PCR (biological) replicates 
 
 This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong.
 
-
-before really starting this step, let me deal with the pcr/extraction replicate messiness with a few of the samples... 
+are there any samples that have made it to this point that don't actually have any reads? 
 ```{r}
-asv_table_filter4 <- asv_table_filter4 %>%
-  tidyr::separate(col = "Sample_ID", into = c("extraction_ID", "rep_id", "rep2"), sep = "-", remove = F)
-
-no_ext_reps <- asv_table_filter4[1:13508,]
-ext_reps <- asv_table_filter4[13509:17768,]
-
-ext_reps <- ext_reps %>%
-  unite(rep_id, rep2, sep = "_", col = "rep_id") %>%
-  mutate(rep_id = ifelse(rep_id == "1_A", "A", 
-                       ifelse(rep_id == "1_B", "B",
-                              ifelse(rep_id == "1_C", "C",
-                                     ifelse(rep_id == "2_A", "D",
-                                            ifelse(rep_id == "2_B", "E",
-                                                   ifelse(rep_id == "2_C", "F", rep_id)))))))
-  
-no_ext_reps <- no_ext_reps[,-4]
-
-combined <- bind_rows(no_ext_reps, ext_reps)
+asv_table_filter4B %>%
+  group_by(Sample_ID) %>%
+  summarise(total_reads = sum(reads)) %>%
+  arrange(total_reads)
 ```
 
-how many pcr replicates does each biological replicate (aka extraction replicate) have? 
+hmm... two samples (e00309-C and e00582-B) now have very few reads after the previous filtering steps.  let's get rid of them now. 
 ```{r}
-combined %>%
+remove_5 <- c("e00390-C", "e00582-B")
+
+temp_table <- asv_table_filter4B %>%
+  filter(!Sample_ID %in% remove_5)
+```
+
+instead of filtering by the biological replicates, i need to filter by the unique extractions.  the 'dist_to_centroid' function later on doesn't like the different number of replicates or that there are so many for a few.. not sure exactly. 
+
+let me get the extraction_ID column from the metadata file... 
+```{r}
+extraction_table <- metadata %>%
+  select(Sample_ID, extraction_ID)
+
+another_temp_table <- temp_table %>%
+  left_join(extraction_table, by = "Sample_ID")
+```
+
+
+how many pcr replicates does each extraction replicate have? 
+```{r}
+another_temp_table %>%
   group_by(extraction_ID) %>%
   summarise(nrep = n_distinct(Sample_ID)) %>%
   #filter(nrep == 2)  # there are 6 
-  filter(nrep == 1) # there are zero! 
+  filter(nrep == 1) # there is one - e00390
 ```
 
-okay, so there are 6 extraction_ID with only 2 pcr replicates. and no extraction_ID with only 1 pcr replicate. 
+okay, so there are 6 extraction_IDs with only 2 pcr replicates. and no extraction_ID with only 1 pcr replicate. 
+
+remove the extraction with only one pcr rep from the data frame
+```{r}
+another_temp_table <- another_temp_table %>%
+  filter(extraction_ID != "e00390")
+```
 
 
 first, i'll calculate an eDNA index
 ```{r}
-normalized <- combined %>%
+normalized <- another_temp_table %>%
   group_by(Sample_ID) %>%
   mutate(Tot = sum(reads),
          Prop_reads = reads/Tot) %>%
@@ -590,8 +630,8 @@ normalized <- combined %>%
 
 #add a new sample id column that also includes the location - will use this for dissimilarity measures
 normalized <- normalized %>%
-  unite(site_extraction, location1, extraction_ID, sep = "_", remove = FALSE) %>%
-  unite(new_ID, site_extraction, rep_id, sep = "-", remove = FALSE)
+  unite(site_biorep, location1, biological_replicate, sep = "_", remove = FALSE) %>%
+  unite(new_ID, site_biorep, pcr_replicate, sep = "-", remove = FALSE)
 ```
 
 
@@ -623,7 +663,6 @@ summary(is.na(names(all.distances.full)))
 
 make the pairwise distances a long table
 ```{r}
-library(reshape)
 as_tibble(subset(melt(as.matrix(all.distances.full)))) -> all.distances.melted
 
 # Any major screw ups
@@ -671,12 +710,10 @@ i think this looks as expected, lowest dissimilarity in pcr reps, then samples f
 will try to follow what was done here (https://github.com/ramongallego/eDNA.and.Ocean.Acidification.Gallego.et.al.2020/blob/master/Scripts/Denoising.all.runs.Rmd) and instead of choosing outliers based on the pairwise distances, we can do a similar thing using the distance to centroid. 
 
 
-####################################
-
 now identify and discard outliers 
 ```{r}
 normalized %>%
-  group_by(site_extraction) %>% nest() -> nested.cleaning      ##group by site-extractionID??? 
+  group_by(extraction_ID) %>% nest() -> nested.cleaning 
 
 nested.cleaning %>% 
   mutate(matrix = map(data, tibble_to_matrix)) -> nested.cleaning
@@ -703,14 +740,12 @@ dist_to_centroid <- function (x,y) {
 ```
 
 ```{r}
-nested.cleaning.temp <- nested.cleaning %>%
-  filter(ncomparisons < 4)
+nested.cleaning.temp <- nested.cleaning %>% 
+  mutate (distances = map2(matrix, extraction_ID, dist_to_centroid))
 
-nested.cleaning.temp2 <- nested.cleaning.temp %>% mutate (distances = map2(matrix, site_extraction, dist_to_centroid)) ### ERROR HERE ####  this doesn't like the site-extractions with six replicates.... 
-
-all_distances <- nested.cleaning.temp2 %>%
+all_distances <- nested.cleaning.temp %>%
   unnest_longer(distances) %>%
-  dplyr::select(site_extraction, distances_id, distances)
+  dplyr::select(extraction_ID, distances_id, distances)
 
 hist(all_distances$distances)
 ```
@@ -725,33 +760,11 @@ discard_centroid <- all_distances$distances_id[outliers_centroid]
 discard_centroid
 ```
 
-####################### 
-
-
-here i will just filter using the pairwise distances among PCR replicates
-```{r}
-pcr.distances <- all.distances.to.plot %>%
-  filter(Distance.type == "PCR.replicates")
-
-pcr.distances.value <- pcr.distances$value
-
-#normparams <- fitdistr(all_pairwise_distances, "normal")$estimate
-normparams <- MASS::fitdistr(pcr.distances.value, "normal")$estimate                                      
-#  probs <- pnorm(all_pairwise_distances, normparams[1], normparams[2])
-probs <- pnorm(pcr.distances.value, normparams[1], normparams[2])
-outliers <- which(probs>0.95)
-
-discard <- pcr.distances[outliers,]
-
-samples_to_discard <- data.frame(unique(c(discard$Sample1, discard$Sample2)))
-colnames(samples_to_discard) <- "new_ID"
-```
-
 output the samples that pass this filter
 ```{r}
-asv_table_filter5 <- combined %>%
-  unite(site_extraction, location1, extraction_ID, sep = "_", remove = FALSE) %>%
-  unite(new_ID, site_extraction, rep_id, sep = "-", remove = FALSE) %>%
+asv_table_filter5 <- another_temp_table %>%
+  unite(site_biorep, location1, biological_replicate, sep = "_", remove = FALSE) %>%
+  unite(new_ID, site_biorep, pcr_replicate, sep = "-", remove = FALSE) %>%
   filter(!new_ID %in% discard_centroid)
 ```
 
@@ -761,120 +774,13 @@ which extraction IDs had a pcr replicate with low similarity??
 to_discard <- data.frame(discard_centroid) %>%
   separate(discard_centroid, into = c("location1", "extraction_ID", "rep_ID"))
 
-removed_step5 <- combined %>%
+removed_step5 <- another_temp_table %>%
   filter(extraction_ID %in% to_discard$extraction_ID)
 ```
 
-
-after my first round of filtering, i wonder if the 95% threshold is too stringent... let's plot what pairwise distances were removed
-```{r}
-pcr.distances$probs <- probs 
-pcr.distances
-
-#what is the minimum pairwise distance that is removed by the 95% threshold? 
-min_value <- min(pcr.distances$value[pcr.distances$probs > 0.95])
-
-ggplot (pcr.distances) +
-  geom_histogram (aes ( x = value, after_stat(ndensity)), position = "dodge",  alpha = 0.9, bins = 50) +
-  geom_vline(xintercept = min_value, linetype = "dashed", color = "red") +
-  labs (x = "Pairwise dissimilarity", y = "density" ,
-        Distance.type = "Distance") +
-    guides (fill = "none")
-
-```
-
-okay to convince me if this threshold needs to be moved, let's visualize the samples that are just at this limit...
-```{r}
-x <- pcr.distances %>%
-  filter(value >0.75, value < 0.80) %>%
-  arrange(value)
-x
-```
-
-```{r}
-asv_table_filter4 %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 100) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-e02091-1-A and e02091-1-B don't pass the 95% filter... 
-
-```{r}
-asv_table_filter4 %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 103) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-e02106-B,C,F; e02107-A,F; e02108-A,D
-hmmm.. these don't seem too bad... 
-
-```{r}
-asv_table_filter4 %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 37) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-e00479-B,C - again doesn't seem too bad.  
-
-how about samples from site 82 - it's pairwise is just below 0.8 
-```{r}
-asv_table_filter4 %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 82) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-e02046-A,C  - those look a bit different... 
-
-MAYBE I DON"T WANT TO FILTER BY PAIRWISE DISTANCES... this seems to drop reps like e02046-A that are similar to other reps(e02046-B) just because they are different from another (e02026-C). when just e02026-C should be the one removed..  
-
-
 maybe just plot a few. 
 
-these samples have dissimilar pcr replicates... 
+these samples have at least one dissimilar pcr replicates 
 ```{r}
 unique(removed_step5$extraction_ID)
 
@@ -898,112 +804,7 @@ removed_step5 %>%
   )  
 ```
 
-okay so the samples from above that are removed are: e00385-B, e00388-B, e00390-B and C, e00396-C, e00409-B, and e00426-A.  This all makes sense visually for these few extraction replicates. cool. 
 
-
-how similar are these to the other extractions from their locations??? 
-
-```{r}
-asv_table_filter4 %>%
-  filter(extraction_ID == 'e00388')
-
-asv_table_filter4 %>%
-  #filter(!extraction_ID %in% ids_removed) %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 7) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-alright none of these look all that similar.. site7 is bit of a mess... 
-
-
-```{r}
-asv_table_filter4 %>%
-  filter(extraction_ID == 'e00426')
-
-asv_table_filter4 %>%
-  #filter(!extraction_ID %in% ids_removed) %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 27) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-pcr reps in e00424 and e00425 are more similar to one another than e00426.  i think we will just drop all pcr reps from e00426 (?).
-
-
-```{r}
-asv_table_filter4 %>%
-  filter(extraction_ID == 'e00421')
-
-asv_table_filter4 %>%
-  #filter(!extraction_ID %in% ids_removed) %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 29) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-the pairwise distance between e00421-A and e00421-C exceeded the threshold...
-
-
-```{r}
-asv_table_filter4 %>%
-  filter(extraction_ID == 'e00474')
-
-asv_table_filter4 %>%
-  #filter(!extraction_ID %in% ids_removed) %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(location1 == 36) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.position = "none",
-    legend.title = element_blank()
-  )  
-```
-
-the pairwise distance between e00474-A and e00474-C exceeded the threshold...
-
-okay, i could go on like this forever... i need to make a decision now on how exactly to filter the pcr reps. 
-
-
-
-
-PLOTTING THE NEWLY FILTERED DATA! - remember that i ignored the samples with 2 extraction reps for now. so none of those sites have been filtered for pcr rep dissimilarity. 
 
 compared to samples that do have similar pcr replicates... 
 
@@ -1079,7 +880,7 @@ asv_table_filter5 %>%
   )  
 ```
 
-site 7 is an example where dissimilar pcr reps have been filtered out...
+site 7 is an example where dissimilar pcr reps have been filtered out... even these don't really looka all that similar...
 
 **site 29**
 ```{r}
@@ -1117,20 +918,36 @@ asv_table_filter5 %>%
   )  
 ```
 
-
-
-go back and make sure no bio rep is based on only one pcr rep.
-
-pivot 
+how many ASV's do we have in our post-decontamination dataset 
 ```{r}
-asv_table_filter5_wide <- asv_table_filter5 %>%
-  select(!loc.asv) %>%
-  pivot_wider(names_from = "ASV", values_from = "reads")
+length(unique(asv_table_filter5$ASV))
 ```
 
+how many sites, biological replicates, and pcr replicates did we end up with for our **environmental samples**?
+```{r}
+length(unique(asv_table_filter5$location1))
 
-make a table that has the number of site, number of bio reps per site, and number of pcr reps per bio rep. - for starting data and then for this final filtered data set... 
+unique_replicates_ending <- asv_table_filter5 %>%
+  group_by(location1) %>%
+  summarise(n_biologial_reps = n_distinct(biological_replicate),
+            n_pcr_reps_per_biorep = n_distinct(pcr_replicate),
+            n_pcr_reps_total = n_biologial_reps*n_pcr_reps_per_biorep)
+
+unique_replicates_ending
+```
+
+compare the pre and post decontamination sample summaries 
+```{r}
+differences <- anti_join(unique_replicates_starting, unique_replicates_ending) 
+differences
+```
+
+just the two site lost bio/pcr reps during decontamination. 
 
 
+save the post-decontamination table 
+```{r}
+write.csv(asv_table_filter5, "decontamination_output_20230630.csv")
+```
 
 
