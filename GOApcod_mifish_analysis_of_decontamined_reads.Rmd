@@ -8,7 +8,7 @@ output: github_document
 analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing runs    
 samples are from the GOA pcod survey in 2021  
 
-this script uses decontaminated read counts. 
+this script uses decontaminated read counts from my June 30 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -20,37 +20,210 @@ library(tidyverse)
 library(ggplot2)
 ```
 
-read in sample metadata
+read in sample metadata - not sure if i really need this. most metadata is in the decontaminated reads file. 
 ```{r}
-metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230515.csv")
+metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
 
 #illumina output changed "_" to "-"
 metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
 ```
 
 read in taxonomic identification
-- this is a table i created that integrated INSECT and blastn classifications
-- i removed a few mammals and no rank ASVs --- GO BACK AND KEEP MARINE MAMMALS? 
+- for now using insect IDs and blastn taxonomy with 1% similarity threshold
 ```{r}
-taxon <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_COMBINED.csv") %>%
-  rename(ASV = representative)
-```
+taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_full_taxonomy_insect.csv") %>%
+  select(!X) %>%
+  dplyr::rename(ASV = representative)
 
+taxon_blastn <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_blastn_20230630.csv") %>%
+  select(!X) %>%
+  dplyr::rename(ASV = qseqid)
+```
 
 read in decontaminated sample table
 ```{r}
-asv_table <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontaminated_reads.csv", row.names = 1)
+decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230630.csv") %>%
+  select(!sample_type) %>%   ## clean-up this table - remove irrelevant columns 
+  select(!loc.asv) %>%
+  select(!new_ID) %>%
+  select(!site_biorep)
 
-asv_summary <- asv_table %>%
+asv_summary <- decontam_reads %>%
   group_by(ASV) %>%
-  summarize(reads = sum(reads))
+  summarize(reads = sum(reads)) %>%
+  arrange(desc(reads))
 ```
 
-join taxon info to sample table 
+join the taxon id's for the ASVs in the decontaminated read dataset 
 ```{r}
-asv_w_id <- asv_summary %>%
-  left_join(taxon, by = "ASV") %>%
-  filter(!is.na(taxon))
+my_asvs <- asv_summary$ASV
+
+join <- taxon_insect %>%
+  filter(ASV %in% my_asvs) %>%
+  left_join(taxon_blastn, by = "ASV")
+```
+
+compare insect vs blastn ids 
+```{r}
+join_taxon <- join %>%
+  select(ASV, taxon.x, rank, species.y, diff, taxon.y, taxonomic_level)
+```
+
+
+Polypera greeni is also called Liparis greeni 
+```{r}
+join_taxon <- join_taxon %>%
+   mutate(across(everything(), ~ifelse(. == "Polypera greeni", "Liparis greeni", .)))
+```
+
+what asvs do the taxonomies match? 
+```{r}
+matches <- join_taxon %>%
+  filter(taxon.x == taxon.y) %>%
+  select(!diff) %>%
+  select(!species.y) %>%
+  unique()
+
+matches_id <- matches %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+```
+
+okay. just under half (93/196) of the asv's have matching ids... 
+
+what about the rest? 
+```{r}
+mismatches <- join_taxon %>%
+  filter(!ASV %in% matches$ASV) %>%
+  filter(!rank == "no rank") %>%
+  rename(taxon_insect = taxon.x,
+         rank_insect = rank, 
+         species_blastn = species.y,
+         diff_blastn = diff,
+         taxon_blastn = taxon.y, 
+         rank_blastn = taxonomic_level)
+
+#write.csv(mismatches, "/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_mismatches.csv")
+```
+
+hmm... okay what options do i have instead of going in by hand..? 
+- for the asvs with 0 diff between the species, go with the blastn id?  but what if only one of the species is within our range? 
+- remove asvs with no blastn id? many have higher taxonomic ids in the insect.. 
+
+can i remove species from this list that do not occur in the GOA??? 
+- try out the rFishBase package - look for species in Pacific, Northeast Waters
+```{r}
+#remotes::install_github("ropensci/rfishbase")
+#library(rfishbase)
+```
+
+i'm having trouble with rfishbase... going to just upload a species list i downloaded from fishbase for all Pacific, Northeast waters species. 
+```{r}
+in_range <- read.csv("/home/kimberly.ledger/GOApcod_2021/FishBase_Pacific_NE_SpeciesList.csv") %>%
+  mutate(taxon = paste(Genus, Species, sep = " "))
+```
+
+filter to keep only taxa that occur in the NE Pacific 
+```{r}
+mismatches_inrange <- mismatches %>%
+  filter(species_blastn %in% in_range$taxon)
+```
+
+look at what is "out of range" 
+```{r}
+out_of_range <- mismatches %>%
+  filter(!species_blastn %in% in_range$taxon) %>%
+  select(species_blastn) %>%
+  unique
+```
+
+should any of these still be there?? 
+
+
+what asvs now only have one species match? 
+```{r}
+one_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp == 1)
+
+one_spp <- mismatches_inrange %>%
+  filter(ASV %in% one_species_asv$ASV)
+
+one_spp_id <- one_spp %>%
+  select(ASV, species_blastn) %>%
+  mutate(rank = "species") %>%
+  rename(taxon = species_blastn)
+```
+
+what asvs still have multiple matches 
+```{r}
+many_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp > 1)
+
+many_spp <- mismatches_inrange %>%
+  filter(ASV %in% many_species_asv$ASV)
+```
+
+use the blastn id for these 
+```{r}
+many_spp_id <- many_spp %>%
+  select(ASV, taxon_blastn, rank_blastn) %>%
+  unique() %>%
+  rename(rank = rank_blastn) %>%
+  rename(taxon = taxon_blastn)
+```
+
+manually change these next.... 
+ASV7 change to Gadus, genus 
+ASV67 change to Gadus, genus 
+ASV102 change to Ammodytes, genus 
+ASV126 change to Gadus, genus 
+
+to do later maybe... write code to identify if the taxon_blast id could be a higher taxonomic resolution (i.e. genus rather than family)
+```{r}
+#ASV7
+many_spp_id[3,2] <- "Gadus"
+many_spp_id[3,3] <- "genus"
+#ASV67
+many_spp_id[14,2] <- "Gadus"
+many_spp_id[14,3] <- "genus"
+#ASV102
+many_spp_id[21,2] <- "Ammodytes"
+many_spp_id[21,3] <- "genus"
+#ASV126
+many_spp_id[23,2] <- "Gadus"
+many_spp_id[23,3] <- "genus"
+```
+
+join all the id tables
+```{r}
+my_ids <- bind_rows(matches_id, one_spp_id, many_spp_id)
+```
+
+now join the read numbers 
+```{r}
+asv_w_id <- decontam_reads %>%
+  left_join(my_ids, by = "ASV")
+```
+
+find out what ASVs didn't get a taxon id and see if that was a big problem... 
+```{r}
+asv_w_id %>%
+  filter(is.na(taxon)) %>%
+  group_by(ASV) %>%
+  summarize(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+```
+
+most of these ASVs without taxonomic ids don't have very many reads... but maybe i should look into the top few later on to see if there is a reasonable id out there... 
+
+anyways... for now i will remove those ASVs.
+```{r}
+asv_w_id <- asv_w_id %>%
+  filter(!is.na(taxon)) 
 ```
 
 plot the proportion of reads for a taxon assigning to individual ASV's 
@@ -76,26 +249,28 @@ asv_w_id %>%
   )
 ```
 
-okay, so some taxa (especially species-level) are only made up of one ASV, while other taxa have several ASVs
-
+okay, so most taxa (especially species-level) are only made up of one ASV, while other taxa have several ASVs
 
 asv summary table - only keeping order and below because everything above that (i.e. class) is identical 
 ```{r}
-asv_id_table <- asv_w_id %>%
-  select(ASV, order, family, genus, species, taxon, reads) %>%
-  group_by(taxon) %>%
-  filter(taxon != "NA") %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  arrange(order, family, genus, species)
+#asv_id_table <- asv_w_id %>%
+#  #select(ASV, order, family, genus, species, taxon, reads) %>%
+#  select(ASV, taxon, reads) %>%
+#  group_by(taxon) %>%
+#  filter(taxon != "NA") %>%
+#  mutate(sum=sum(reads)) %>%
+#  mutate(prop = reads/sum) # %>%
+# # arrange(order, family, genus, species)
 ```
 
+
+** can't do this unless i rejoin the full taxon information... 
 arrange taxons in a way that make sense instead of alphabetical 
 ```{r}
-asv_order <- asv_w_id %>%
-  arrange(order, family, genus, species) %>%
-  select(taxon) %>%
-  unique
+#asv_order <- asv_w_id %>%
+#  arrange(order, family, genus, species) %>%
+#  select(taxon) %>%
+#  unique
 ```
 
 now, join taxon and asv tables (with decontaminated read counts)
@@ -103,51 +278,56 @@ now, join taxon and asv tables (with decontaminated read counts)
 asv_id <- asv_w_id %>%
   select(ASV, taxon)
 
-read_summary <- asv_table %>%
-  left_join(asv_id, by = "ASV") %>%
-  filter(reads > 0) %>%
-  filter(taxon != "NA") %>%
+read_summary_wide <- asv_w_id %>%
   group_by(Sample_ID, taxon) %>%
   summarise(total_read_count = sum(reads)) %>%
   pivot_wider(names_from = "taxon", values_from = "total_read_count") %>%
   replace(is.na(.), 0)
+
+read_summary<- asv_w_id %>%
+  group_by(Sample_ID, taxon) %>%
+  summarise(read_count = sum(reads))
 ```
 
+
+**most of this info is already there... not joining metadata for now. 
 join to metadata  - UPDATE COLUMN NUMBERS BELOW depending on input read_summary data
 ```{r}
-join <- metadata %>%
-  left_join(read_summary, by = c("Sample_ID"))
-
-join_long <- join %>%
-  pivot_longer(cols = 20:62, names_to = "taxon", values_to = "reads") %>%
-  mutate(reads = ifelse(is.na(reads), 0, reads))
-
-join_long$Sample_ID <- as.factor(join_long$Sample_ID)
-join_long$pcr_replicate <- as.factor(join_long$pcr_replicate)
-join_long$extraction_ID <- as.factor(join_long$extraction_ID)
-join_long$extraction_replicate <- as.factor(join_long$extraction_replicate) 
-join_long$run <- as.factor(join_long$run)
-join_long$sample_type <- as.factor(join_long$sample_type)
-join_long$taxon <- as.factor(join_long$taxon)
-
-summary(join_long)
+# join <- metadata %>%
+#   left_join(read_summary, by = c("Sample_ID"))
+# 
+# join_long <- join %>%
+#   pivot_longer(cols = 20:62, names_to = "taxon", values_to = "reads") %>%
+#   mutate(reads = ifelse(is.na(reads), 0, reads))
+# 
+# join_long$Sample_ID <- as.factor(join_long$Sample_ID)
+# join_long$pcr_replicate <- as.factor(join_long$pcr_replicate)
+# join_long$extraction_ID <- as.factor(join_long$extraction_ID)
+# join_long$extraction_replicate <- as.factor(join_long$extraction_replicate) 
+# join_long$run <- as.factor(join_long$run)
+# join_long$sample_type <- as.factor(join_long$sample_type)
+# join_long$taxon <- as.factor(join_long$taxon)
+# 
+# summary(join_long)
 ```
 
+
+** need full taxonomic info to do this 
 relevel the taxon factor
 ```{r}
-desired_order <- asv_order$taxon
-
-join_long <- join_long %>%
-  mutate(taxon = factor(taxon, levels = desired_order))
-
-levels(join_long$taxon)
+# desired_order <- asv_order$taxon
+# 
+# join_long <- join_long %>%
+#   mutate(taxon = factor(taxon, levels = desired_order))
+# 
+# levels(join_long$taxon)
 ```
 
 make a table with taxons and total read counts 
 ```{r}
-join_long %>%
+read_summary %>%
   group_by(taxon) %>%
-  summarise(total_reads = sum(reads)) %>%
+  summarise(total_reads = sum(read_count)) %>%
   arrange(desc(total_reads))
 ```
 
