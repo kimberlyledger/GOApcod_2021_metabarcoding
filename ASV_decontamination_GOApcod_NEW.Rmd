@@ -15,12 +15,12 @@ Inputs: This code starts with the ASV table output from DADA2 pipeline in my seq
 
 Outputs: We will end up with a decontaminated ASV table that can be used for additional analyses.  
 
-Decontamination will involve **5 steps**
-**1. Estimate tag-jumping** - There is the potential for some barcodes (that are used to identify the individual samples in a MiSeq run) to be assigned to the wrong sample. To estimate how many reads did this, we can use our positive control (which has a known composition and is extremely unlikely to be present in the environmental samples). What we will do is subtract the proportion of reads observed in the control samples from each environmental sample. The output will be a dataset with the same number of samples and ASVs as before, but with fewer reads of certain sequences (ASVs). 
-**2. Discard PCR replicates with low numbers of reads** - Sometimes PCR replicates have low read numbers, and therefore will have skewed relative read proportions. These should be removed.  To do this we will fit the number of reads assigned to each sample to a normal distribution and discard those samples with a **97.5%** probability of not fitting in that distribution. The output will be a dataset with fewer samples and potentially fewer ASVs.
-**3. Account for contaminants in positive and negative controls** - We can use the reads that show up where we know they shouldn't be (i.e. the controls) to further clean up the dataset. Each ASV found in the controls at a higher abundance than in replicates from environmental samples will be removed. The output will be a dataset with the same number of samples as before but with fewer ASVs.
-**4. Hierarchical Occupancy Modeling** - We can use occupancy modeling to help determine if rare ASVs are real or a PCR artifact. We will remove the ASVs that probably aren't real. The output will be a dataset with the same number of samples as before but with fewer ASVs.
-**5. Dissimilarity between PCR (biological) replicates** -  PCR replicates should be similar (this is not the case for biological replicates because of the many stochastic processes involved in the sequencing of a sample, but anyways...). This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong. The output will be a dataset with fewer samples and potentially fewer ASVs. 
+Decontamination will involve **5 steps**  
+**1. Estimate tag-jumping** - There is the potential for some barcodes (that are used to identify the individual samples in a MiSeq run) to be assigned to the wrong sample. To estimate how many reads did this, we can use our positive control (which has a known composition and is extremely unlikely to be present in the environmental samples). What we will do is subtract the proportion of reads observed in the control samples from each environmental sample. The output will be a dataset with the same number of samples and ASVs as before, but with fewer reads of certain sequences (ASVs).   
+**2. Discard PCR replicates with low numbers of reads** - Sometimes PCR replicates have low read numbers, and therefore will have skewed relative read proportions. These should be removed.  To do this we will fit the number of reads assigned to each sample to a normal distribution and discard those samples with a **97.5%** probability of not fitting in that distribution. The output will be a dataset with fewer samples and potentially fewer ASVs.  
+**3. Account for contaminants in positive and negative controls** - We can use the reads that show up where we know they shouldn't be (i.e. the controls) to further clean up the dataset. Each ASV found in the controls at a higher abundance than in replicates from environmental samples will be removed. The output will be a dataset with the same number of samples as before but with fewer ASVs.  
+**4. Hierarchical Occupancy Modeling** - We can use occupancy modeling to help determine if rare ASVs are real or a PCR artifact. We will remove the ASVs that probably aren't real. The output will be a dataset with the same number of samples as before but with fewer ASVs.  
+**5. Dissimilarity between PCR (biological) replicates** -  PCR replicates should be similar (this is not the case for biological replicates because of the many stochastic processes involved in the sequencing of a sample, but anyways...). This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong. The output will be a dataset with fewer samples and potentially fewer ASVs.   
 
 
 # Load libraries and data 
@@ -51,7 +51,6 @@ metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID)
 ```
 
 let's start by taking a closer looks at our dataset 
-
 ```{r}
 ## number of ASVs 
 sum(grepl("ASV", colnames(asv_table)))  
@@ -217,7 +216,7 @@ which samples are removed because of the 2.5%/1000 reads threshold??
 replicates_removed_2 <- asv_table_filter1 %>%
   filter(Sample_ID %in% outlierIDs) %>%
   pivot_wider(names_from = "ASV", values_from = "reads")
-head(replicates_removed_2)
+#head(replicates_removed_2)
 ```
 
 number of pcr replicates removed
@@ -484,7 +483,7 @@ temp.df <- occu_df_subset
                              iter = 4000   #number of iterations per chain
        )
        
-  myHierarchicalStanResults <- tidy(tibble(as.data.frame(myHierarchicalModel)))
+  #myHierarchicalStanResults <- tidy(tibble(as.data.frame(myHierarchicalModel)))
   
   #write_rds(myHierarchicalStanResults, "occupancy_output_20230629.rds")  ## not that this version actually takes very long to rerun but anyways... 
 ```
@@ -609,7 +608,7 @@ another_temp_table %>%
   filter(nrep == 1) # there is one - e00390
 ```
 
-okay, so there are 6 extraction_IDs with only 2 pcr replicates. and no extraction_ID with only 1 pcr replicate. 
+okay, so there are 6 extraction_IDs with only 2 pcr replicates. and one extraction_ID with only 1 pcr replicate. 
 
 remove the extraction with only one pcr rep from the data frame
 ```{r}
@@ -711,7 +710,7 @@ will try to follow what was done here (https://github.com/ramongallego/eDNA.and.
 
 
 now identify and discard outliers 
-```{r}
+```{r message=FALSE, warning=FALSE}
 normalized %>%
   group_by(extraction_ID) %>% nest() -> nested.cleaning 
 
@@ -805,6 +804,8 @@ removed_step5 %>%
 ```
 
 
+
+# Some results of read decontamination  
 
 compared to samples that do have similar pcr replicates... 
 
@@ -923,31 +924,30 @@ how many ASV's do we have in our post-decontamination dataset
 length(unique(asv_table_filter5$ASV))
 ```
 
+
 how many sites, biological replicates, and pcr replicates did we end up with for our **environmental samples**?
 ```{r}
 length(unique(asv_table_filter5$location1))
 
-unique_replicates_ending <- asv_table_filter5 %>%
-  group_by(location1) %>%
-  summarise(n_biologial_reps = n_distinct(biological_replicate),
-            n_pcr_reps_per_biorep = n_distinct(pcr_replicate),
-            n_pcr_reps_total = n_biologial_reps*n_pcr_reps_per_biorep)
+#unique_replicates_ending <- asv_table_filter5 %>%
+#  group_by(location1) %>%
+#  summarise(n_biologial_reps = n_distinct(biological_replicate),
+#            n_pcr_reps_per_biorep = n_distinct(pcr_replicate),
+#            n_pcr_reps_total = n_biologial_reps*n_pcr_reps_per_biorep)
 
-unique_replicates_ending
+#unique_replicates_ending
 ```
 
 compare the pre and post decontamination sample summaries 
 ```{r}
-differences <- anti_join(unique_replicates_starting, unique_replicates_ending) 
-differences
+#differences <- anti_join(unique_replicates_starting, unique_replicates_ending) 
+#differences
 ```
-
-just the two site lost bio/pcr reps during decontamination. 
 
 
 save the post-decontamination table 
 ```{r}
-write.csv(asv_table_filter5, "decontamination_output_20230630.csv")
+#write.csv(asv_table_filter5, "decontamination_output_20230630.csv", row.names = FALSE)
 ```
 
 
