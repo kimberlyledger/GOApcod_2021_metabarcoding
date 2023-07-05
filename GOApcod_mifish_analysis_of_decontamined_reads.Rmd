@@ -1,14 +1,13 @@
 ---
 title: "asv analysis of GOA pcod 2021 samples using MiFish"
 author: "Kimberly Ledger"
-date: "2023-05-29"
+date: "2023-07-05"
 output: github_document
 ---
 
-analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing runs    
-samples are from the GOA pcod survey in 2021  
-
-this script uses decontaminated read counts from my June 30 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
+- analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing runs    
+- samples are from the GOA pcod survey in 2021  
+- this script uses decontaminated read counts from my June 30 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -20,7 +19,7 @@ library(tidyverse)
 library(ggplot2)
 ```
 
-read in sample metadata - not sure if i really need this. most metadata is in the decontaminated reads file. 
+read in sample metadata
 ```{r}
 metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
 
@@ -28,7 +27,7 @@ metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230
 metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
 ```
 
-read in taxonomic identification
+read in taxonomic identification  
 - for now using insect IDs and blastn taxonomy with 1% similarity threshold
 ```{r}
 taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_full_taxonomy_insect.csv") %>%
@@ -54,7 +53,7 @@ asv_summary <- decontam_reads %>%
   arrange(desc(reads))
 ```
 
-join the taxon id's for the ASVs in the decontaminated read dataset 
+join the taxon id's ti the ASVs in the decontaminated read dataset 
 ```{r}
 my_asvs <- asv_summary$ASV
 
@@ -70,7 +69,8 @@ join_taxon <- join %>%
 ```
 
 
-Polypera greeni is also called Liparis greeni 
+rename taxa with different scientific names in the blastn vs insect  
+- Polypera greeni is also called Liparis greeni 
 ```{r}
 join_taxon <- join_taxon %>%
    mutate(across(everything(), ~ifelse(. == "Polypera greeni", "Liparis greeni", .)))
@@ -87,9 +87,11 @@ matches <- join_taxon %>%
 matches_id <- matches %>%
   select(ASV, taxon.x, rank) %>%
   rename(taxon = taxon.x)
+
+nrow(matches_id)
 ```
 
-okay. just under half (93/196) of the asv's have matching ids... 
+okay. just under half (93/196) of the asv's have matching blastn and insect ids... 
 
 what about the rest? 
 ```{r}
@@ -106,18 +108,15 @@ mismatches <- join_taxon %>%
 #write.csv(mismatches, "/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_mismatches.csv")
 ```
 
-hmm... okay what options do i have instead of going in by hand..? 
-- for the asvs with 0 diff between the species, go with the blastn id?  but what if only one of the species is within our range? 
-- remove asvs with no blastn id? many have higher taxonomic ids in the insect.. 
 
-can i remove species from this list that do not occur in the GOA??? 
+can i remove species from this list that do not occur in the GOA???  
 - try out the rFishBase package - look for species in Pacific, Northeast Waters
 ```{r}
 #remotes::install_github("ropensci/rfishbase")
 #library(rfishbase)
 ```
 
-i'm having trouble with rfishbase... going to just upload a species list i downloaded from fishbase for all Pacific, Northeast waters species. 
+i'm having trouble installing rfishbase... going to just upload a species list i downloaded from fishbase for all Pacific, Northeast waters species. 
 ```{r}
 in_range <- read.csv("/home/kimberly.ledger/GOApcod_2021/FishBase_Pacific_NE_SpeciesList.csv") %>%
   mutate(taxon = paste(Genus, Species, sep = " "))
@@ -135,12 +134,13 @@ out_of_range <- mismatches %>%
   filter(!species_blastn %in% in_range$taxon) %>%
   select(species_blastn) %>%
   unique
+
+out_of_range
 ```
 
-should any of these still be there?? 
+should any of these still be there?? - need to consult someone else here. 
 
-
-what asvs now only have one species match? 
+now, what asvs only have one species match? 
 ```{r}
 one_species_asv <- mismatches_inrange %>%
   group_by(ASV) %>%
@@ -154,9 +154,11 @@ one_spp_id <- one_spp %>%
   select(ASV, species_blastn) %>%
   mutate(rank = "species") %>%
   rename(taxon = species_blastn)
+
+nrow(one_spp_id)
 ```
 
-what asvs still have multiple matches 
+what asvs still have multiple matches? 
 ```{r}
 many_species_asv <- mismatches_inrange %>%
   group_by(ASV) %>%
@@ -165,6 +167,8 @@ many_species_asv <- mismatches_inrange %>%
 
 many_spp <- mismatches_inrange %>%
   filter(ASV %in% many_species_asv$ASV)
+
+nrow(many_spp)
 ```
 
 use the blastn id for these 
@@ -176,11 +180,11 @@ many_spp_id <- many_spp %>%
   rename(taxon = taxon_blastn)
 ```
 
-manually change these next.... 
-ASV7 change to Gadus, genus 
-ASV67 change to Gadus, genus 
-ASV102 change to Ammodytes, genus 
-ASV126 change to Gadus, genus 
+manually change these next....  
+- ASV7 change to Gadus, genus   
+- ASV67 change to Gadus, genus   
+- ASV102 change to Ammodytes, genus   
+- AV126 change to Gadus, genus   
 
 to do later maybe... write code to identify if the taxon_blast id could be a higher taxonomic resolution (i.e. genus rather than family)
 ```{r}
@@ -218,9 +222,75 @@ asv_w_id %>%
   arrange(desc(total_reads))
 ```
 
-most of these ASVs without taxonomic ids don't have very many reads... but maybe i should look into the top few later on to see if there is a reasonable id out there... 
+most of these ASVs without taxonomic ids don't have very many reads... but let me take a closer looks at the top few (asvs with >10000 reads). 
+```{r}
+join_taxon %>%
+  filter(ASV == "ASV23")
+```
 
-anyways... for now i will remove those ASVs.
+okay, this is atlantic mackerel... not in range. tribe is above genus but below family/subfamily. let's go with that.   
+
+```{r}
+join_taxon %>%
+  filter(ASV == "ASV61")
+```
+
+hmm.. not sure what to do here. for now, i'm going to remove this asv.  it may be Clupea pallasii - but this spp already has 2.5 million reads so 40,000 more may not be a big deal. 
+
+```{r}
+join_taxon %>%
+  filter(ASV == "ASV65")
+```
+
+keep this as Gadus... i wonder why the blastn id didn't return anything... 
+
+```{r}
+join_taxon %>%
+  filter(ASV == "ASV77")
+```
+
+keep this as Mallotus villosus... i wonder why insect gave this no rank... 
+
+
+```{r}
+join_taxon %>%
+  filter(ASV == "ASV101")
+```
+
+removing this one. 
+
+
+add these ids to 'my_id'
+```{r}
+asv23 <- join_taxon %>%
+  filter(ASV == "ASV23") %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+asv65 <- join_taxon %>%
+  filter(ASV == "ASV65") %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+asv77 <- join_taxon %>%
+  filter(ASV == "ASV77") %>%
+  select(ASV, taxon.y, rank) %>%
+  rename(taxon = taxon.y)
+```
+
+
+join all the id tables
+```{r}
+my_ids_2 <- bind_rows(my_ids, asv23, asv65, asv77)
+```
+
+now join the read numbers 
+```{r}
+asv_w_id <- decontam_reads %>%
+  left_join(my_ids_2, by = "ASV")
+```
+
+now i will remove ASVs with no taxon ID 
 ```{r}
 asv_w_id <- asv_w_id %>%
   filter(!is.na(taxon)) 
@@ -263,7 +333,6 @@ asv summary table - only keeping order and below because everything above that (
 # # arrange(order, family, genus, species)
 ```
 
-
 ** can't do this unless i rejoin the full taxon information... 
 arrange taxons in a way that make sense instead of alphabetical 
 ```{r}
@@ -286,29 +355,26 @@ read_summary_wide <- asv_w_id %>%
 
 read_summary<- asv_w_id %>%
   group_by(Sample_ID, taxon) %>%
-  summarise(read_count = sum(reads))
+  summarise(reads = sum(reads))
 ```
 
-
-**most of this info is already there... not joining metadata for now. 
-join to metadata  - UPDATE COLUMN NUMBERS BELOW depending on input read_summary data
+join to metadata
 ```{r}
-# join <- metadata %>%
-#   left_join(read_summary, by = c("Sample_ID"))
-# 
-# join_long <- join %>%
-#   pivot_longer(cols = 20:62, names_to = "taxon", values_to = "reads") %>%
-#   mutate(reads = ifelse(is.na(reads), 0, reads))
-# 
-# join_long$Sample_ID <- as.factor(join_long$Sample_ID)
-# join_long$pcr_replicate <- as.factor(join_long$pcr_replicate)
-# join_long$extraction_ID <- as.factor(join_long$extraction_ID)
-# join_long$extraction_replicate <- as.factor(join_long$extraction_replicate) 
-# join_long$run <- as.factor(join_long$run)
-# join_long$sample_type <- as.factor(join_long$sample_type)
-# join_long$taxon <- as.factor(join_long$taxon)
-# 
-# summary(join_long)
+join <- metadata %>%
+  left_join(read_summary, by = c("Sample_ID")) %>%
+  filter(!is.na(reads))
+
+join$Sample_ID <- as.factor(join$Sample_ID)
+join$pcr_replicate <- as.factor(join$pcr_replicate)
+join$biological_replicate <- as.factor(join$biological_replicate)
+join$extraction_ID <- as.factor(join$extraction_ID)
+join$extraction_replicate <- as.factor(join$extraction_replicate)
+join$run <- as.factor(join$run)
+join$location1 <- as.factor(join$location1)
+join$sample_type <- as.factor(join$sample_type)
+join$taxon <- as.factor(join$taxon)
+
+#summary(join)
 ```
 
 
@@ -325,113 +391,35 @@ relevel the taxon factor
 
 make a table with taxons and total read counts 
 ```{r}
-read_summary %>%
+join %>%
   group_by(taxon) %>%
-  summarise(total_reads = sum(read_count)) %>%
+  summarise(total_reads = sum(reads)) %>%
   arrange(desc(total_reads))
 ```
 
 
 
-# now let's check out data! 
+## now let's check out data! 
 
-since reads were decontaminated it doesn't make sense to plot positive controls, pcr blanks, or extraction blanks... 
-but remember there were lots of O. nerka reads in e00562-A that i did not incorporate into the decontamination process. 
-
-## any sequences in field blanks? 
-```{r echo=FALSE}
-join_long %>% 
-  filter(sample_type == "field_blank") %>%
-  ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
-  geom_bar(stat = "identity") + 
-  facet_wrap(~extraction_ID, scales = 'free', ncol = 3) +
-  theme_bw() +
-  labs(
-    y = "sequencing reads",
-    x = "sample",
-    title = "field blanks") + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.text = element_text(size = 8),
-    legend.key.size = unit(0.3, "cm"),
-    legend.position = "none",
-    legend.title = element_blank()
-  )
-```
-
-well, unfortunately only three field blanks were taken during this entire survey.  
-
-what are the read counts in the field blanks?
+take a quick first look at the library sizes (i.e. the number of reads) in each sample
 ```{r}
-field_nc_reads <- join_long %>%
-  filter(sample_type == "field_blank") %>% 
-  filter(reads > 0) %>%
-  select(Sample_ID, taxon, reads) %>%
-  pivot_wider(names_from = "Sample_ID", values_from = "reads") 
-
-field_nc_reads
-```
-
-some evidence for field contamination. 
-
-well, well. will need to think about how to account/deal with this. 
-
-
-create some read summaries 
-```{r}
-join_long %>%
-  group_by(sample_type, run, Sample_ID) %>%
-  summarise(total_reads = sum(reads)) %>%
-  group_by(sample_type, run) %>%
-  summarise(min_reads = min(total_reads),
-            quant1_reads = quantile(total_reads, 0.25),
-            median_reads = median(total_reads),
-            mean_reads = mean(total_reads),
-            quant3_reads = quantile(total_reads, 0.75),
-            max_reads = max(total_reads))
-```
-
-not a huge difference in read counts for pc and samples between run A and B so I won't worry about any batch effects for now. 
-
-
-take a quick first look at the library sizes (i.e. the number of reads) in each sample, as a function of whether that sample was a true positive sample or a negative control
-```{r}
-temp <- join_long %>%
+temp <- join %>%
   group_by(Sample_ID) %>%
   mutate(total_reads = sum(reads)) %>%
   arrange(total_reads) %>%
-  select(Sample_ID, extraction_ID, sample_type, dna_conc, total_reads) %>%
   unique()
 
 temp$Index <- seq(nrow(temp))
 
-ggplot(temp, aes(x=Index, y = total_reads, color = sample_type)) + 
+ggplot(temp, aes(x=Index, y = total_reads)) + 
          geom_point(alpha = 0.5)
 ```
 
-plot total reads by DNA concentration for samples 
-```{r}
-temp %>%
-  filter(sample_type == "sample") %>%
-  ggplot(aes(x=dna_conc, y = total_reads)) + 
-         geom_point(alpha = 0.5)
-```
-
-hmm.. perhaps i should flag samples that have no reads post decontamination but have a DNA concentration of 2ng/ul or greater?? 
-
-```{r}
-temp %>%
-  filter(dna_conc > 2) %>%
-  filter(total_reads < 1) %>%
-  arrange(Sample_ID)
-```
-
-maybe try to rerun these samples on the MiSeq??? 
-
+remember, the read decontamination process already excluded samples/replicates with no or few reads
 
 alright, let me plot the legend for reference 
 ```{r echo=FALSE}
-for_legend <- join_long %>%
+for_legend <- join %>%
   ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
   geom_bar(stat = "identity") + 
   theme_bw() +
@@ -459,12 +447,13 @@ grid.draw(legend)
 
 okay, now i will summarize samples by location (remember part of the decontamination steps included removing outlier site replicates)
 
+i am calculating the mean read proportions at a site here 
 ```{r}
-location_summary <- join_long %>%
-  filter(sample_type == "sample") %>%
+location_summary <- join %>%
   group_by(Sample_ID) %>%
   mutate(sum=sum(reads)) %>%
   mutate(prop = reads/sum) %>%
+  filter(sum > 1) %>%
   group_by(location1, taxon) %>%
   summarize(mean_prop = mean(prop))
 
@@ -489,54 +478,46 @@ location_summary %>%
   )
 ```
 
-note the locations without columns is not missing data, there were not samples taken from locations of those values and my first couple attempts to remove them from the plot failed 
-
-
-
-
-
-
-## now let's take a look at reads from the samples 
+## now let's take a look at reads from all of the samples 
 ```{r echo=FALSE}
-# join_long %>% 
-#   filter(sample_type == "sample") %>%
-#   ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
-#   geom_bar(stat = "identity") + 
-#   scale_y_sqrt() +
-#   theme_bw() +
-#   labs(
-#     y = "sequencing reads",
-#     x = "sample",
-#     title = "number of reads") + 
-#   theme(
-#     axis.text.x=element_blank(), #remove x axis labels
-#     legend.text = element_text(size = 8),
-#     legend.key.size = unit(0.3, "cm"),
-#     legend.position = "none",
-#     legend.title = element_blank(),
-#   )
+join %>%
+  ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
+  geom_bar(stat = "identity") +
+  scale_y_sqrt() +
+  theme_bw() +
+  labs(
+    y = "sequencing reads",
+    x = "sample",
+    title = "number of reads") +
+  theme(
+    axis.text.x=element_blank(), #remove x axis labels
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank(),
+  )
 ```
 
 ## and proportion of reads from the samples 
 
-```{r}
-# join_long %>% 
-#   filter(sample_type == "sample") %>%
-#   group_by(Sample_ID) %>%
-#   mutate(sum=sum(reads)) %>%
-#   mutate(prop = reads/sum) %>%
-#   ggplot(aes(x=Sample_ID, y=prop, fill=taxon)) +
-#   geom_bar(stat = "identity") + 
-#   theme_bw() +
-#   labs(
-#     y = "proportion of sequencing reads",
-#     x = "sample",
-#     title = "proportion of reads") + 
-#   theme(
-#     axis.text.x=element_blank(), #remove x axis labels
-#     legend.text = element_text(size = 8),
-#     legend.key.size = unit(0.3, "cm"),
-#     legend.position = "none",
-#     legend.title = element_blank(),
-#   )
+```{r echo=FALSE}
+join %>%
+  filter(sample_type == "sample") %>%
+  group_by(Sample_ID) %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=Sample_ID, y=prop, fill=taxon)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  labs(
+    y = "proportion of sequencing reads",
+    x = "sample",
+    title = "proportion of reads") +
+  theme(
+    axis.text.x=element_blank(), #remove x axis labels
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank(),
+  )
 ```

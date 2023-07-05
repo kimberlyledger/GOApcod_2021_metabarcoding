@@ -1,13 +1,13 @@
 asv analysis of GOA pcod 2021 samples using MiFish
 ================
 Kimberly Ledger
-2023-05-29
+2023-07-05
 
-analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing
-runs  
-samples are from the GOA pcod survey in 2021
-
-this script uses decontaminated read counts.
+- analysis of mifish sequences from May 9 2023 and May 12 2023
+  sequencing runs  
+- samples are from the GOA pcod survey in 2021  
+- this script uses decontaminated read counts from my June 30 2023 run
+  of “ASV_decontamination_GOApcod_NEW.Rmd”
 
 load libraries
 
@@ -16,10 +16,10 @@ library(tidyverse)
 ```
 
     ## ── Attaching packages ─────────────────────────────────────── tidyverse 1.3.2 ──
-    ## ✔ ggplot2 3.4.0      ✔ purrr   0.3.5 
-    ## ✔ tibble  3.2.1      ✔ dplyr   1.0.10
-    ## ✔ tidyr   1.2.1      ✔ stringr 1.4.1 
-    ## ✔ readr   2.1.3      ✔ forcats 0.5.2 
+    ## ✔ ggplot2 3.4.0     ✔ purrr   1.0.1
+    ## ✔ tibble  3.2.1     ✔ dplyr   1.1.2
+    ## ✔ tidyr   1.3.0     ✔ stringr 1.5.0
+    ## ✔ readr   2.1.3     ✔ forcats 0.5.2
     ## ── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
     ## ✖ dplyr::filter() masks stats::filter()
     ## ✖ dplyr::lag()    masks stats::lag()
@@ -31,65 +31,460 @@ library(ggplot2)
 read in sample metadata
 
 ``` r
-metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230515.csv")
+metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
 
 #illumina output changed "_" to "-"
 metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
 ```
 
-read in taxonomic identification - this is a table i created that
-integrated INSECT and blastn classifications - i removed a few mammals
-and no rank ASVs
+read in taxonomic identification  
+- for now using insect IDs and blastn taxonomy with 1% similarity
+threshold
 
 ``` r
-taxon <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_COMBINED.csv") %>%
-  rename(ASV = representative)
+taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_full_taxonomy_insect.csv") %>%
+  select(!X) %>%
+  dplyr::rename(ASV = representative)
+
+taxon_blastn <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_blastn_20230630.csv") %>%
+  select(!X) %>%
+  dplyr::rename(ASV = qseqid)
 ```
 
 read in decontaminated sample table
 
 ``` r
-asv_table <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontaminated_reads.csv", row.names = 1)
+decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230630.csv") %>%
+  select(!sample_type) %>%   ## clean-up this table - remove irrelevant columns 
+  select(!loc.asv) %>%
+  select(!new_ID) %>%
+  select(!site_biorep)
 
-asv_summary <- asv_table %>%
+asv_summary <- decontam_reads %>%
   group_by(ASV) %>%
-  summarize(reads = sum(reads))
+  summarize(reads = sum(reads)) %>%
+  arrange(desc(reads))
 ```
 
-join taxon info to sample table
+join the taxon id’s ti the ASVs in the decontaminated read dataset
 
 ``` r
-asv_w_id <- asv_summary %>%
-  left_join(taxon, by = "ASV") %>%
-  filter(!is.na(taxon))
+my_asvs <- asv_summary$ASV
+
+join <- taxon_insect %>%
+  filter(ASV %in% my_asvs) %>%
+  left_join(taxon_blastn, by = "ASV")
+```
+
+compare insect vs blastn ids
+
+``` r
+join_taxon <- join %>%
+  select(ASV, taxon.x, rank, species.y, diff, taxon.y, taxonomic_level)
+```
+
+rename taxa with different scientific names in the blastn vs insect  
+- Polypera greeni is also called Liparis greeni
+
+``` r
+join_taxon <- join_taxon %>%
+   mutate(across(everything(), ~ifelse(. == "Polypera greeni", "Liparis greeni", .)))
+```
+
+what asvs do the taxonomies match?
+
+``` r
+matches <- join_taxon %>%
+  filter(taxon.x == taxon.y) %>%
+  select(!diff) %>%
+  select(!species.y) %>%
+  unique()
+
+matches_id <- matches %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+nrow(matches_id)
+```
+
+    ## [1] 93
+
+okay. just under half (93/196) of the asv’s have matching blastn and
+insect ids…
+
+what about the rest?
+
+``` r
+mismatches <- join_taxon %>%
+  filter(!ASV %in% matches$ASV) %>%
+  filter(!rank == "no rank") %>%
+  rename(taxon_insect = taxon.x,
+         rank_insect = rank, 
+         species_blastn = species.y,
+         diff_blastn = diff,
+         taxon_blastn = taxon.y, 
+         rank_blastn = taxonomic_level)
+
+#write.csv(mismatches, "/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_mismatches.csv")
+```
+
+can i remove species from this list that do not occur in the GOA???  
+- try out the rFishBase package - look for species in Pacific, Northeast
+Waters
+
+``` r
+#remotes::install_github("ropensci/rfishbase")
+#library(rfishbase)
+```
+
+i’m having trouble installing rfishbase… going to just upload a species
+list i downloaded from fishbase for all Pacific, Northeast waters
+species.
+
+``` r
+in_range <- read.csv("/home/kimberly.ledger/GOApcod_2021/FishBase_Pacific_NE_SpeciesList.csv") %>%
+  mutate(taxon = paste(Genus, Species, sep = " "))
+```
+
+filter to keep only taxa that occur in the NE Pacific
+
+``` r
+mismatches_inrange <- mismatches %>%
+  filter(species_blastn %in% in_range$taxon)
+```
+
+look at what is “out of range”
+
+``` r
+out_of_range <- mismatches %>%
+  filter(!species_blastn %in% in_range$taxon) %>%
+  select(species_blastn) %>%
+  unique
+
+out_of_range
+```
+
+    ##                   species_blastn
+    ## 1                   Gadus morhua
+    ## 2                Clupea harengus
+    ## 3              Sprattus sprattus
+    ## 4         Oncorhynchus kawamurae
+    ## 5            Ammodytes japonicus
+    ## 6              Ammodytes marinus
+    ## 7             Ammodytes tobianus
+    ## 8         Hyperoplus immaculatus
+    ## 9         Hyperoplus lanceolatus
+    ## 10              Pholis gunnellus
+    ## 11          Arctogadus glacialis
+    ## 13              Salvelinus albus
+    ## 14         Salvelinus kuznetzovi
+    ## 15            Salvelinus curilus
+    ## 16           Salvelinus drjagini
+    ## 17          Salvelinus kronocius
+    ## 18        Salvelinus leucomaenis
+    ## 19         Salvelinus levanidovi
+    ## 20           Salvelinus schmidti
+    ## 22               Limanda limanda
+    ## 23     Hippoglossus hippoglossus
+    ## 24              Scomber scombrus
+    ## 27            Hexagrammos otakii
+    ## 28          Hexagrammos agrammus
+    ## 29       Lepidopsetta mochigarei
+    ## 31                          <NA>
+    ## 40      Lumpenus lampretaeformis
+    ## 41         Myoxocephalus aenaeas
+    ## 47       Brachyopsis segaliensis
+    ## 54     Syngnathus californiensis
+    ## 55           Syngnathus euchrous
+    ## 56             Syngnathus exilis
+    ## 66      Melanogrammus aeglefinus
+    ## 67          Merlangius merlangus
+    ## 68            Oncorhynchus gilae
+    ## 75     Cottocomephorus grewingki
+    ## 76                  Cottus asper
+    ## 77              Cottus beldingii
+    ## 78                  Cottus gobio
+    ## 79                Cottus gulosus
+    ## 80              Cottus perplexus
+    ## 81                  Cottus ricei
+    ## 82  Batrachocottus multiradiatus
+    ## 83      Batrachocottus nikolskii
+    ## 84        Batrachocottus talievi
+    ## 85        Comephorus baikalensis
+    ## 86          Comephorus dybowskii
+    ## 87       Cottocomephorus inermis
+    ## 88              Cottus aleuticus
+    ## 89                Cottus bairdii
+    ## 90               Cottus bendirei
+    ## 91               Cottus cognatus
+    ## 92               Cottus confusus
+    ## 93            Cottus dzungaricus
+    ## 94          Cottus hangiongensis
+    ## 95             Cottus perifretum
+    ## 96               Cottus pitensis
+    ## 97                 Cottus pollux
+    ## 98               Cottus rhenanus
+    ## 99               Cottus rhotheus
+    ## 100              Procottus major
+    ## 104          Sebastes baramenuke
+    ## 105               Sebastes cheni
+    ## 106              Sebastes hubbsi
+    ## 107             Sebastes inermis
+    ## 108             Sebastes joyneri
+    ## 109         Sebastes longispinis
+    ## 110            Sebastes oculatus
+    ## 111             Sebastes owstoni
+    ## 112       Sebastes pachycephalus
+    ## 113        Sebastes rubrivinctus
+    ## 114          Sebastes schlegelii
+    ## 115       Sebastes steindachneri
+    ## 116        Sebastes taczanowskii
+    ## 117           Sebastes thompsoni
+    ## 118         Sebastes ventricosus
+    ## 119             Sebastes wakiyai
+    ## 133           Taurocottus bergii
+    ## 139            Cottus marginatus
+    ## 141            Cottus poecilopus
+    ## 157    Gymnocanthus herzensteini
+
+should any of these still be there?? - need to consult someone else
+here.
+
+now, what asvs only have one species match?
+
+``` r
+one_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp == 1)
+
+one_spp <- mismatches_inrange %>%
+  filter(ASV %in% one_species_asv$ASV)
+
+one_spp_id <- one_spp %>%
+  select(ASV, species_blastn) %>%
+  mutate(rank = "species") %>%
+  rename(taxon = species_blastn)
+
+nrow(one_spp_id)
+```
+
+    ## [1] 32
+
+what asvs still have multiple matches?
+
+``` r
+many_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp > 1)
+
+many_spp <- mismatches_inrange %>%
+  filter(ASV %in% many_species_asv$ASV)
+
+nrow(many_spp)
+```
+
+    ## [1] 85
+
+use the blastn id for these
+
+``` r
+many_spp_id <- many_spp %>%
+  select(ASV, taxon_blastn, rank_blastn) %>%
+  unique() %>%
+  rename(rank = rank_blastn) %>%
+  rename(taxon = taxon_blastn)
+```
+
+manually change these next….  
+- ASV7 change to Gadus, genus  
+- ASV67 change to Gadus, genus  
+- ASV102 change to Ammodytes, genus  
+- AV126 change to Gadus, genus
+
+to do later maybe… write code to identify if the taxon_blast id could be
+a higher taxonomic resolution (i.e. genus rather than family)
+
+``` r
+#ASV7
+many_spp_id[3,2] <- "Gadus"
+many_spp_id[3,3] <- "genus"
+#ASV67
+many_spp_id[14,2] <- "Gadus"
+many_spp_id[14,3] <- "genus"
+#ASV102
+many_spp_id[21,2] <- "Ammodytes"
+many_spp_id[21,3] <- "genus"
+#ASV126
+many_spp_id[23,2] <- "Gadus"
+many_spp_id[23,3] <- "genus"
+```
+
+join all the id tables
+
+``` r
+my_ids <- bind_rows(matches_id, one_spp_id, many_spp_id)
+```
+
+now join the read numbers
+
+``` r
+asv_w_id <- decontam_reads %>%
+  left_join(my_ids, by = "ASV")
+```
+
+find out what ASVs didn’t get a taxon id and see if that was a big
+problem…
+
+``` r
+asv_w_id %>%
+  filter(is.na(taxon)) %>%
+  group_by(ASV) %>%
+  summarize(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+```
+
+    ## # A tibble: 39 × 2
+    ##    ASV    total_reads
+    ##    <chr>        <dbl>
+    ##  1 ASV23       129759
+    ##  2 ASV61        39786
+    ##  3 ASV65        32546
+    ##  4 ASV77        24294
+    ##  5 ASV101       11004
+    ##  6 ASV121        7255
+    ##  7 ASV113        7070
+    ##  8 ASV105        7001
+    ##  9 ASV119        6664
+    ## 10 ASV103        6642
+    ## # ℹ 29 more rows
+
+most of these ASVs without taxonomic ids don’t have very many reads… but
+let me take a closer looks at the top few (asvs with \>10000 reads).
+
+``` r
+join_taxon %>%
+  filter(ASV == "ASV23")
+```
+
+    ##     ASV   taxon.x  rank        species.y diff          taxon.y taxonomic_level
+    ## 1 ASV23 Scombrini tribe Scomber scombrus    0 Scomber scombrus         species
+
+okay, this is atlantic mackerel… not in range. tribe is above genus but
+below family/subfamily. let’s go with that.
+
+``` r
+join_taxon %>%
+  filter(ASV == "ASV61")
+```
+
+    ##     ASV    taxon.x     rank species.y diff taxon.y taxonomic_level
+    ## 1 ASV61 Clupeoidei suborder      <NA>   NA    <NA>            <NA>
+
+hmm.. not sure what to do here. for now, i’m going to remove this asv.
+it may be Clupea pallasii - but this spp already has 2.5 million reads
+so 40,000 more may not be a big deal.
+
+``` r
+join_taxon %>%
+  filter(ASV == "ASV65")
+```
+
+    ##     ASV taxon.x  rank species.y diff taxon.y taxonomic_level
+    ## 1 ASV65   Gadus genus      <NA>   NA    <NA>            <NA>
+
+keep this as Gadus… i wonder why the blastn id didn’t return anything…
+
+``` r
+join_taxon %>%
+  filter(ASV == "ASV77")
+```
+
+    ##     ASV   taxon.x    rank         species.y diff           taxon.y
+    ## 1 ASV77 Stomiatii no rank Mallotus villosus    0 Mallotus villosus
+    ##   taxonomic_level
+    ## 1         species
+
+keep this as Mallotus villosus… i wonder why insect gave this no rank…
+
+``` r
+join_taxon %>%
+  filter(ASV == "ASV101")
+```
+
+    ##      ASV    taxon.x    rank species.y diff taxon.y taxonomic_level
+    ## 1 ASV101 Eupercaria no rank      <NA>   NA    <NA>            <NA>
+
+removing this one.
+
+add these ids to ‘my_id’
+
+``` r
+asv23 <- join_taxon %>%
+  filter(ASV == "ASV23") %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+asv65 <- join_taxon %>%
+  filter(ASV == "ASV65") %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+asv77 <- join_taxon %>%
+  filter(ASV == "ASV77") %>%
+  select(ASV, taxon.y, rank) %>%
+  rename(taxon = taxon.y)
+```
+
+join all the id tables
+
+``` r
+my_ids_2 <- bind_rows(my_ids, asv23, asv65, asv77)
+```
+
+now join the read numbers
+
+``` r
+asv_w_id <- decontam_reads %>%
+  left_join(my_ids_2, by = "ASV")
+```
+
+now i will remove ASVs with no taxon ID
+
+``` r
+asv_w_id <- asv_w_id %>%
+  filter(!is.na(taxon)) 
 ```
 
 plot the proportion of reads for a taxon assigning to individual ASV’s
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-6-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-30-1.png)<!-- -->
 
-okay, so some taxa (especially species-level) are only made up of one
+okay, so most taxa (especially species-level) are only made up of one
 ASV, while other taxa have several ASVs
 
 asv summary table - only keeping order and below because everything
 above that (i.e. class) is identical
 
 ``` r
-asv_id_table <- asv_w_id %>%
-  select(ASV, order, family, genus, species, taxon, reads) %>%
-  group_by(taxon) %>%
-  filter(taxon != "NA") %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  arrange(order, family, genus, species)
+#asv_id_table <- asv_w_id %>%
+#  #select(ASV, order, family, genus, species, taxon, reads) %>%
+#  select(ASV, taxon, reads) %>%
+#  group_by(taxon) %>%
+#  filter(taxon != "NA") %>%
+#  mutate(sum=sum(reads)) %>%
+#  mutate(prop = reads/sum) # %>%
+# # arrange(order, family, genus, species)
 ```
 
-arrange taxons in a way that make sense instead of alphabetical
+\*\* can’t do this unless i rejoin the full taxon information… arrange
+taxons in a way that make sense instead of alphabetical
 
 ``` r
-asv_order <- asv_w_id %>%
-  arrange(order, family, genus, species) %>%
-  select(taxon) %>%
-  unique
+#asv_order <- asv_w_id %>%
+#  arrange(order, family, genus, species) %>%
+#  select(taxon) %>%
+#  unique
 ```
 
 now, join taxon and asv tables (with decontaminated read counts)
@@ -98,10 +493,7 @@ now, join taxon and asv tables (with decontaminated read counts)
 asv_id <- asv_w_id %>%
   select(ASV, taxon)
 
-read_summary <- asv_table %>%
-  left_join(asv_id, by = "ASV") %>%
-  filter(reads > 0) %>%
-  filter(taxon != "NA") %>%
+read_summary_wide <- asv_w_id %>%
   group_by(Sample_ID, taxon) %>%
   summarise(total_read_count = sum(reads)) %>%
   pivot_wider(names_from = "taxon", values_from = "total_read_count") %>%
@@ -111,268 +503,92 @@ read_summary <- asv_table %>%
     ## `summarise()` has grouped output by 'Sample_ID'. You can override using the
     ## `.groups` argument.
 
-join to metadata - UPDATE COLUMN NUMBERS BELOW depending on input
-read_summary data
+``` r
+read_summary<- asv_w_id %>%
+  group_by(Sample_ID, taxon) %>%
+  summarise(reads = sum(reads))
+```
+
+    ## `summarise()` has grouped output by 'Sample_ID'. You can override using the
+    ## `.groups` argument.
+
+join to metadata
 
 ``` r
 join <- metadata %>%
-  left_join(read_summary, by = c("Sample_ID"))
+  left_join(read_summary, by = c("Sample_ID")) %>%
+  filter(!is.na(reads))
 
-join_long <- join %>%
-  pivot_longer(cols = 20:62, names_to = "taxon", values_to = "reads") %>%
-  mutate(reads = ifelse(is.na(reads), 0, reads))
+join$Sample_ID <- as.factor(join$Sample_ID)
+join$pcr_replicate <- as.factor(join$pcr_replicate)
+join$biological_replicate <- as.factor(join$biological_replicate)
+join$extraction_ID <- as.factor(join$extraction_ID)
+join$extraction_replicate <- as.factor(join$extraction_replicate)
+join$run <- as.factor(join$run)
+join$location1 <- as.factor(join$location1)
+join$sample_type <- as.factor(join$sample_type)
+join$taxon <- as.factor(join$taxon)
 
-join_long$Sample_ID <- as.factor(join_long$Sample_ID)
-join_long$pcr_replicate <- as.factor(join_long$pcr_replicate)
-join_long$extraction_ID <- as.factor(join_long$extraction_ID)
-join_long$extraction_replicate <- as.factor(join_long$extraction_replicate) 
-join_long$run <- as.factor(join_long$run)
-join_long$sample_type <- as.factor(join_long$sample_type)
-join_long$taxon <- as.factor(join_long$taxon)
-
-summary(join_long)
+#summary(join)
 ```
 
-    ##     Sample_ID     pcr_replicate extraction_ID   extraction_replicate run      
-    ##  e00373-A:   43   A:14534       e02072 :  258   1   :38055           A:21156  
-    ##  e00373-B:   43   B:14534       e02073 :  258   2   : 5160           B:22446  
-    ##  e00373-C:   43   C:14534       e02074 :  258   NA's:  387                    
-    ##  e00374-A:   43                 e02075 :  258                                 
-    ##  e00374-B:   43                 e02076 :  258                                 
-    ##  e00374-C:   43                 e02077 :  258                                 
-    ##  (Other) :43344                 (Other):42054                                 
-    ##  collection_year collection_month collection_day    location1     
-    ##  Min.   :2021    Min.   :6.000    Min.   : 1.00   Min.   :  1.00  
-    ##  1st Qu.:2021    1st Qu.:6.000    1st Qu.:11.00   1st Qu.: 38.00  
-    ##  Median :2021    Median :7.000    Median :18.00   Median : 63.00  
-    ##  Mean   :2021    Mean   :6.723    Mean   :16.72   Mean   : 61.87  
-    ##  3rd Qu.:2021    3rd Qu.:7.000    3rd Qu.:21.00   3rd Qu.: 92.00  
-    ##  Max.   :2021    Max.   :7.000    Max.   :30.00   Max.   :104.00  
-    ##  NA's   :2193    NA's   :2193     NA's   :2193    NA's   :7224    
-    ##    longitude         latitude               sample_type    time_of_day       
-    ##  Min.   :-162.1   Min.   :54.92   extraction_blank:  645   Length:43602      
-    ##  1st Qu.:-159.4   1st Qu.:55.34   field_blank     :  387   Class :character  
-    ##  Median :-153.5   Median :57.91   PCR_blank       : 1032   Mode  :character  
-    ##  Mean   :-145.3   Mean   :57.20   positive_control:  516                     
-    ##  3rd Qu.:-152.3   3rd Qu.:58.27   sample          :41022                     
-    ##  Max.   : 157.2   Max.   :60.12                                              
-    ##  NA's   :6063     NA's   :6063                                               
-    ##  extraction_date    plate_or_vial      extraction_plate   extraction_well   
-    ##  Length:43602       Length:43602       Length:43602       Length:43602      
-    ##  Class :character   Class :character   Class :character   Class :character  
-    ##  Mode  :character   Mode  :character   Mode  :character   Mode  :character  
-    ##                                                                             
-    ##                                                                             
-    ##                                                                             
-    ##                                                                             
-    ##     dna_conc         pcr_conc                      taxon      
-    ##  Min.   : 0.282   Min.   : 0.60   Ammodytes           : 1014  
-    ##  1st Qu.: 2.494   1st Qu.:19.07   Anoplarchus         : 1014  
-    ##  Median : 6.405   Median :22.20   Apodichthys flavidus: 1014  
-    ##  Mean   : 8.484   Mean   :22.43   Artedius fenestralis: 1014  
-    ##  3rd Qu.:11.991   3rd Qu.:29.15   Artedius harringtoni: 1014  
-    ##  Max.   :36.555   Max.   :35.00   Artedius lateralis  : 1014  
-    ##  NA's   :1505                     (Other)             :37518  
-    ##      reads        
-    ##  Min.   :    0.0  
-    ##  1st Qu.:    0.0  
-    ##  Median :    0.0  
-    ##  Mean   :  456.6  
-    ##  3rd Qu.:    0.0  
-    ##  Max.   :67641.7  
-    ## 
-
-relevel the taxon factor
+\*\* need full taxonomic info to do this relevel the taxon factor
 
 ``` r
-desired_order <- asv_order$taxon
-
-join_long <- join_long %>%
-  mutate(taxon = factor(taxon, levels = desired_order))
-
-levels(join_long$taxon)
+# desired_order <- asv_order$taxon
+# 
+# join_long <- join_long %>%
+#   mutate(taxon = factor(taxon, levels = desired_order))
+# 
+# levels(join_long$taxon)
 ```
-
-    ##  [1] "Clupea pallasii"             "Gadidae"                    
-    ##  [3] "Eleginus gracilis"           "Gadus"                      
-    ##  [5] "Gadus chalcogrammus"         "Hypomesus pretiosus"        
-    ##  [7] "Mallotus villosus"           "Bathymaster"                
-    ##  [9] "Cottidae"                    "Artedius fenestralis"       
-    ## [11] "Artedius harringtoni"        "Artedius lateralis"         
-    ## [13] "Clinocottus acuticeps"       "Enophrys bison"             
-    ## [15] "Hemilepidotus hemilepidotus" "Leptocottus armatus"        
-    ## [17] "Myoxocephalus"               "Oligocottus"                
-    ## [19] "Synchirus gilli"             "Cymatogaster aggregata"     
-    ## [21] "Gasterosteus aculeatus"      "Hexagrammos"                
-    ## [23] "Hexagrammos decagrammus"     "Ophiodon elongatus"         
-    ## [25] "Liparis greeni"              "Apodichthys flavidus"       
-    ## [27] "Pholis laeta"                "Sebastes"                   
-    ## [29] "Stichaeidae"                 "Anoplarchus"                
-    ## [31] "Phytichthys chirus"          "Xiphister"                  
-    ## [33] "Trichodon trichodon"         "Zaprora silenus"            
-    ## [35] "Pleuronectidae"              "Lepidopsetta"               
-    ## [37] "Limanda"                     "Oncorhynchus"               
-    ## [39] "Oncorhynchus keta"           "Salvelinus"                 
-    ## [41] "Scombridae"                  "Syngnathus"                 
-    ## [43] "Ammodytes"
 
 make a table with taxons and total read counts
 
 ``` r
-join_long %>%
+join %>%
   group_by(taxon) %>%
   summarise(total_reads = sum(reads)) %>%
   arrange(desc(total_reads))
 ```
 
-    ## # A tibble: 43 × 2
-    ##    taxon           total_reads
-    ##    <fct>                 <dbl>
-    ##  1 Gadus              3757232.
-    ##  2 Clupea pallasii    2562570.
-    ##  3 Oncorhynchus       2451936.
-    ##  4 Hexagrammos        1383299.
-    ##  5 Ammodytes          1339193.
-    ##  6 Gadidae            1021244.
-    ##  7 Pholis laeta        850062.
-    ##  8 Anoplarchus         610703.
-    ##  9 Cottidae            447987.
-    ## 10 Xiphister           410359.
-    ## # ℹ 33 more rows
+    ## # A tibble: 62 × 2
+    ##    taxon                total_reads
+    ##    <fct>                      <dbl>
+    ##  1 Gadus                   3726814.
+    ##  2 Clupea pallasii         2451229.
+    ##  3 Oncorhynchus            2183027.
+    ##  4 Ammodytes personatus    1196527.
+    ##  5 Hexagrammos             1091239.
+    ##  6 Pholis laeta             734320.
+    ##  7 Anoplarchus              521445.
+    ##  8 Pleuronectidae           518780 
+    ##  9 Cottidae                 398865.
+    ## 10 Gadidae                  312918.
+    ## # ℹ 52 more rows
 
-# now let’s check out data!
-
-since reads were decontaminated it doesn’t make sense to plot positive
-controls, pcr blanks, or extraction blanks… but remember there were lots
-of O. nerka reads in e00562-A that i did not incorporate into the
-decontamination process.
-
-## any sequences in field blanks?
-
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-13-1.png)<!-- -->
-
-well, unfortunately only three field blanks were taken during this
-entire survey.
-
-what are the read counts in the field blanks?
-
-``` r
-field_nc_reads <- join_long %>%
-  filter(sample_type == "field_blank") %>% 
-  filter(reads > 0) %>%
-  select(Sample_ID, taxon, reads) %>%
-  pivot_wider(names_from = "Sample_ID", values_from = "reads") 
-
-field_nc_reads
-```
-
-    ## # A tibble: 3 × 5
-    ##   taxon             `e00511-B` `e00513-B` `e00511-C` `e00512-C`
-    ##   <fct>                  <dbl>      <dbl>      <dbl>      <dbl>
-    ## 1 Oncorhynchus keta      30919        NA        6617       NA  
-    ## 2 Oncorhynchus              NA        20          NA       16.6
-    ## 3 Gadus                     NA      7614.         NA    25737.
-
-some evidence for field contamination.
-
-well, well. will need to think about how to account/deal with this.
-
-create some read summaries
-
-``` r
-join_long %>%
-  group_by(sample_type, run, Sample_ID) %>%
-  summarise(total_reads = sum(reads)) %>%
-  group_by(sample_type, run) %>%
-  summarise(min_reads = min(total_reads),
-            quant1_reads = quantile(total_reads, 0.25),
-            median_reads = median(total_reads),
-            mean_reads = mean(total_reads),
-            quant3_reads = quantile(total_reads, 0.75),
-            max_reads = max(total_reads))
-```
-
-    ## `summarise()` has grouped output by 'sample_type', 'run'. You can override
-    ## using the `.groups` argument.
-    ## `summarise()` has grouped output by 'sample_type'. You can override using the
-    ## `.groups` argument.
-
-    ## # A tibble: 9 × 8
-    ## # Groups:   sample_type [5]
-    ##   sample_type  run   min_reads quant1_reads median_reads mean_reads quant3_reads
-    ##   <fct>        <fct>     <dbl>        <dbl>        <dbl>      <dbl>        <dbl>
-    ## 1 extraction_… A             0           0            0       1603.           0 
-    ## 2 extraction_… B             0           0            0          0            0 
-    ## 3 field_blank  A             0           0            0       7880.        7634.
-    ## 4 PCR_blank    A             0           0            0          0            0 
-    ## 5 PCR_blank    B             0           0            0          0            0 
-    ## 6 positive_co… A             0           0            0          0            0 
-    ## 7 positive_co… B             0           0            0          0            0 
-    ## 8 sample       A             0       17380.       23208.     23006.       28276.
-    ## 9 sample       B             0       14244.       19001.     18757.       23135.
-    ## # ℹ 1 more variable: max_reads <dbl>
-
-not a huge difference in read counts for pc and samples between run A
-and B so I won’t worry about any batch effects for now.
+## now let’s check out data!
 
 take a quick first look at the library sizes (i.e. the number of reads)
-in each sample, as a function of whether that sample was a true positive
-sample or a negative control
+in each sample
 
 ``` r
-temp <- join_long %>%
+temp <- join %>%
   group_by(Sample_ID) %>%
   mutate(total_reads = sum(reads)) %>%
   arrange(total_reads) %>%
-  select(Sample_ID, extraction_ID, sample_type, dna_conc, total_reads) %>%
   unique()
 
 temp$Index <- seq(nrow(temp))
 
-ggplot(temp, aes(x=Index, y = total_reads, color = sample_type)) + 
+ggplot(temp, aes(x=Index, y = total_reads)) + 
          geom_point(alpha = 0.5)
 ```
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-16-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-37-1.png)<!-- -->
 
-plot total reads by DNA concentration for samples
-
-``` r
-temp %>%
-  filter(sample_type == "sample") %>%
-  ggplot(aes(x=dna_conc, y = total_reads)) + 
-         geom_point(alpha = 0.5)
-```
-
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-17-1.png)<!-- -->
-
-hmm.. perhaps i should flag samples that have no reads post
-decontamination but have a DNA concentration of 2ng/ul or greater??
-
-``` r
-temp %>%
-  filter(dna_conc > 2) %>%
-  filter(total_reads < 1) %>%
-  arrange(Sample_ID)
-```
-
-    ## # A tibble: 46 × 6
-    ## # Groups:   Sample_ID [46]
-    ##    Sample_ID extraction_ID sample_type dna_conc total_reads Index
-    ##    <fct>     <fct>         <fct>          <dbl>       <dbl> <int>
-    ##  1 e00417-A  e00417        sample          2.59           0     4
-    ##  2 e00417-B  e00417        sample          2.59           0    14
-    ##  3 e00417-C  e00417        sample          2.59           0    22
-    ##  4 e00435-A  e00435        sample          6.82           0     7
-    ##  5 e00474-C  e00474        sample          2.48           0    24
-    ##  6 e00481-A  e00481        sample          2.26           0     8
-    ##  7 e00521-C  e00521        sample          5.48           0    52
-    ##  8 e00538-C  e00538        sample          3.01           0    53
-    ##  9 e00542-A  e00542        sample         21.6            0    32
-    ## 10 e00542-B  e00542        sample         21.6            0    43
-    ## # ℹ 36 more rows
-
-maybe try to rerun these samples on the MiSeq???
+remember, the read decontamination process already excluded
+samples/replicates with no or few reads
 
 alright, let me plot the legend for reference
 
@@ -383,17 +599,19 @@ alright, let me plot the legend for reference
     ## 
     ##     combine
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-19-1.png)<!-- -->
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-38-1.png)<!-- -->
 
 okay, now i will summarize samples by location (remember part of the
 decontamination steps included removing outlier site replicates)
 
+i am calculating the mean read proportions at a site here
+
 ``` r
-location_summary <- join_long %>%
-  filter(sample_type == "sample") %>%
+location_summary <- join %>%
   group_by(Sample_ID) %>%
   mutate(sum=sum(reads)) %>%
   mutate(prop = reads/sum) %>%
+  filter(sum > 1) %>%
   group_by(location1, taxon) %>%
   summarize(mean_prop = mean(prop))
 ```
@@ -423,36 +641,12 @@ location_summary %>%
   )
 ```
 
-    ## Warning: Removed 1333 rows containing missing values (`position_stack()`).
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-40-1.png)<!-- -->
 
-![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-21-1.png)<!-- -->
+## now let’s take a look at reads from all of the samples
 
-note the locations without columns is not missing data, there were not
-samples taken from locations of those values and my first couple
-attempts to remove them from the plot failed
-
-## now let’s take a look at reads from the samples
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-41-1.png)<!-- -->
 
 ## and proportion of reads from the samples
 
-``` r
-# join_long %>% 
-#   filter(sample_type == "sample") %>%
-#   group_by(Sample_ID) %>%
-#   mutate(sum=sum(reads)) %>%
-#   mutate(prop = reads/sum) %>%
-#   ggplot(aes(x=Sample_ID, y=prop, fill=taxon)) +
-#   geom_bar(stat = "identity") + 
-#   theme_bw() +
-#   labs(
-#     y = "proportion of sequencing reads",
-#     x = "sample",
-#     title = "proportion of reads") + 
-#   theme(
-#     axis.text.x=element_blank(), #remove x axis labels
-#     legend.text = element_text(size = 8),
-#     legend.key.size = unit(0.3, "cm"),
-#     legend.position = "none",
-#     legend.title = element_blank(),
-#   )
-```
+![](GOApcod_mifish_analysis_of_decontamined_reads_files/figure-gfm/unnamed-chunk-42-1.png)<!-- -->
