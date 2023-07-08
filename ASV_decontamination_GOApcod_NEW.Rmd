@@ -1,7 +1,7 @@
 ---
-title: "Decontaminating GOA pcod eDNA ASVs and samples"
+title: "Decontaminating GOA pcod eDNA metabarcoding ASVs and samples"
 author: "Kimberly Ledger"
-date: "2023-06-27"
+date: "2023-07-07"
 output: github_document
 ---
 
@@ -16,10 +16,14 @@ Inputs: This code starts with the ASV table output from DADA2 pipeline in my seq
 Outputs: We will end up with a decontaminated ASV table that can be used for additional analyses.  
 
 Decontamination will involve **5 steps**  
-**1. Estimate tag-jumping** - There is the potential for some barcodes (that are used to identify the individual samples in a MiSeq run) to be assigned to the wrong sample. To estimate how many reads did this, we can use our positive control (which has a known composition and is extremely unlikely to be present in the environmental samples). What we will do is subtract the proportion of reads observed in the control samples from each environmental sample. The output will be a dataset with the same number of samples and ASVs as before, but with fewer reads of certain sequences (ASVs).   
-**2. Discard PCR replicates with low numbers of reads** - Sometimes PCR replicates have low read numbers, and therefore will have skewed relative read proportions. These should be removed.  To do this we will fit the number of reads assigned to each sample to a normal distribution and discard those samples with a **97.5%** probability of not fitting in that distribution. The output will be a dataset with fewer samples and potentially fewer ASVs.  
-**3. Account for contaminants in positive and negative controls** - We can use the reads that show up where we know they shouldn't be (i.e. the controls) to further clean up the dataset. Each ASV found in the controls at a higher abundance than in replicates from environmental samples will be removed. The output will be a dataset with the same number of samples as before but with fewer ASVs.  
+**1. Estimate tag-jumping** - There is the potential for barcodes (that are used to identify the individual samples in a MiSeq run) to be assigned to the wrong sample for a variety of reasons. While we can't tell exactly which mechanism generated these errors, we can still estimate the occurrence of tag-jumping and account for it in our dataset. To do this, we will consider our positive control samples (which have known composition and are extremely unlikely to be present in the environmental samples) as representatives of the amount of tag-jumping occuring across the entire dataset. Specifically, what we will do is subtract the proportion of reads observed in the control samples from each environmental sample. The output will be a dataset with the same number of samples and ASVs as before, but with fewer reads of certain sequences (ASVs). We expect this bias in tag-jumping to be frequency-dependent (i.e. the more abundant ASVs are more likely to be found in samples where they are not suppose to be.)  
+
+**2. Account for contaminants in positive and negative controls** - We can use the reads that show up where we know they shouldn't be (i.e. the controls) to further clean up the dataset. We will remove ASVs that only occur in controls and not in environmental samples. And then we will subtract the maximum number of reads from ASVs found in either the extraction or pcr controls from all samples. The output will be a dataset with the same number of samples as before but with fewer ASVs.  
+
+**3. Discard PCR replicates with low numbers of reads** - Sometimes PCR replicates have low read numbers, and therefore will have skewed relative read proportions. These should be removed.  To do this we will fit the number of reads assigned to each sample to a normal distribution and discard those samples with a **97.5%** probability of not fitting in that distribution. The output will be a dataset with fewer samples and potentially fewer ASVs.  
+
 **4. Hierarchical Occupancy Modeling** - We can use occupancy modeling to help determine if rare ASVs are real or a PCR artifact. We will remove the ASVs that probably aren't real. The output will be a dataset with the same number of samples as before but with fewer ASVs.  
+
 **5. Dissimilarity between PCR (biological) replicates** -  PCR replicates should be similar (this is not the case for biological replicates because of the many stochastic processes involved in the sequencing of a sample, but anyways...). This step removes samples for which the dissimilarity between PCR replicates exceeds the normal distribution of dissimilarities observed in samples. The objective of this step is to remove any technical replicates that look like they do not belong. The output will be a dataset with fewer samples and potentially fewer ASVs.   
 
 
@@ -90,8 +94,9 @@ unique_replicates_starting
 ```
 
 
-# 1. Estimate index hopping  
-subtract the proportion of reads that jumped into the control samples from each environmental sample 
+Before diving into the decontamination steps, let's get a feel for what the data look like. 
+
+### positive controls 
 
 add column to the ASV table that labels the sample type
 ```{r}
@@ -105,16 +110,13 @@ let's start by visualizing the reads in the positive control samples
 asv_table_with_sample_type %>%
   pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
   filter(sample_type == "positive_control") %>%
- # group_by(Sample_ID) %>%
- # mutate(sum=sum(reads)) %>%
- # mutate(prop = reads/sum) %>%
   ggplot(aes(x=Sample_ID, y=reads, fill=ASV)) +
   geom_bar(stat = "identity") + 
     theme_bw() +
   labs(
     y = "number of sequencing reads",
     x = "sample ID",
-    title = "ASV reads") + 
+    title = "ASV reads in positive controls") + 
   theme(
     axis.text.x = element_text(angle = 90, hjust = 0.95),
     legend.text = element_text(size = 8),
@@ -123,6 +125,158 @@ asv_table_with_sample_type %>%
     legend.title = element_blank()
   )
 ```
+
+top asvs in positive controls
+```{r}
+asvs_PC <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "positive_control") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+
+head(asvs_PC, 10)
+```
+
+### field blanks
+
+let me look into the reads that got into the field blanks
+```{r}
+asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "field_blank") %>%
+  ggplot(aes(x=Sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads in field negatives") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+asvs_FN <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "field_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+
+head(asvs_FN, 10)
+```
+
+
+### extraction blanks 
+
+let me look into the reads that got into the extraction blanks
+```{r}
+asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "extraction_blank") %>%
+  ggplot(aes(x=Sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads - extraction blanks") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+all but one replicate has relatively few reads. and it's only in one pcr rep of the extraction.   
+
+```{r}
+asvs_EC <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "extraction_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+
+head(asvs_EC, 10)
+```
+
+lots of ASV43 (Oncorhynchus) in e00562-A 
+asv73 and asv263 is human
+- the rest of the asvs seem to follow the trend that the more total reads per ASV the more likely they are to get into other samples... 
+
+### pcr blanks 
+
+let me look into the reads that got into the pcr blanks
+```{r}
+asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "PCR_blank") %>%
+  ggplot(aes(x=Sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads - pcr negatives") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+```{r}
+asvs_PCRN <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  filter(sample_type == "PCR_blank") %>%
+  group_by(ASV) %>%
+  summarise(total = sum(reads)) %>%
+  arrange(desc(total))
+
+head(asvs_PCRN, 10)
+```
+
+again, asv73 is human.  
+
+okay, now how many sturgeon reads made it into the other samples? 
+```{r}
+sturgeon_ASV_list <- c("ASV16", "ASV158", "ASV227", "ASV1108")
+
+sturgeon_in_samples <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  group_by(Sample_ID) %>%
+  mutate(total_reads = sum(reads)) %>%
+  filter(ASV %in% sturgeon_ASV_list) %>%
+  select(!ASV) %>%
+  unique() %>%
+  mutate(sturgeon_reads=sum(reads)) %>%
+  select(!reads) %>%
+  unique() %>%
+  mutate(prop_sturgeon = sturgeon_reads/total_reads) %>%
+  #arrange(desc(prop_sturgeon)) %>%
+  group_by(sample_type) %>%
+  summarise(max_reads_sturgeon = max(sturgeon_reads),
+            max_prop_sturgeon = max(prop_sturgeon),
+            avg_reads_sturgeon = mean(sturgeon_reads), 
+            avg_prop_sturgeon = mean(prop_sturgeon))
+
+sturgeon_in_samples
+```
+
+
+# 1. Estimate index hopping  
+subtract the proportion of reads that jumped into the positive control samples from each environmental sample 
 
 identify the maximum proportion of reads for each ASV found in the positive controls
 ```{r}
@@ -136,10 +290,50 @@ prop_asvs_in_positives <- asv_table_with_sample_type %>%
   summarise(max_prop = max(Prop))
 ```
 
-now subtract this max proportion for each ASV from environmental samples and all negative controls  
+let's plot the max proportion of reads for each ASV found in the positive controls vs the abundance of reads for that ASV (total) 
+```{r}
+reads_per_asv <-  asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  group_by(ASV) %>%
+  summarise(TotalReadsPerASV = sum(reads))
+
+for_plot <- prop_asvs_in_positives %>%
+  left_join(reads_per_asv, by = "ASV") %>%
+  filter(ASV != "ASV16")  ## remove the most abundant sturgeon asv from this plot
+
+ggplot(for_plot, aes(x = TotalReadsPerASV, y = max_prop)) + 
+  geom_point()
+```
+
+so there appears to be a general frequency-dependent relationship here (more reads = more tag-jumping) but there are two clear outliers.  what are those? 
+
+```{r}
+for_plot %>%
+  filter(max_prop > 0.02)
+```
+
+ASV158 gets assigned to the family Acipenseridae - this is also sturgeon! 
+ASV227 gets assigned to the genus Acipenser - also sturgeon... 
+
+let me plot this again without all sturgeon asvs 
+```{r}
+for_plot2 <- for_plot %>%
+  filter(ASV != "ASV158") %>%
+  filter(ASV != "ASV227") %>%
+  filter(ASV != "ASV1108")  #this asv also assigns to sturgeon family
+
+ggplot(for_plot2, aes(x = TotalReadsPerASV, y = max_prop)) + 
+  geom_point()
+```
+
+
+So I could see two approaches here... 
+
+### 1 - 
+
+subtract the max proportion of tag-jumped reads for each ASV from all samples
 ```{r}
 indexhop_table <- asv_table_with_sample_type %>%
-  #filter(sample_type != "positive_control") %>% ## working all samples except the positive controls 
   pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
   group_by(Sample_ID) %>%
   mutate(TotalReadsPerSample = sum(reads)) %>%
@@ -147,14 +341,35 @@ indexhop_table <- asv_table_with_sample_type %>%
   mutate(IndexHoppingReads = TotalReadsPerSample*max_prop) %>%
   mutate(reads_IndexHop_removed = reads - IndexHoppingReads) %>%
   mutate(reads_IndexHop_removed = if_else(reads_IndexHop_removed < 0, 0, reads_IndexHop_removed))
+head(indexhop_table)
 ```
+
+### 2 
+
+**OR** do i want to fit a line to my total reads vs prop in PC and then subtract reads based on that? i'm forcing the y-int to be zero. 
+```{r}
+fit <- lm(max_prop ~ TotalReadsPerASV - 1, data = for_plot2)
+summary(fit)
+```
+
+```{r}
+indexhop_table_version2 <- asv_table_with_sample_type %>%
+  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
+  group_by(ASV) %>%
+  mutate(TotalReadsPerASV = sum(reads)) %>%
+  mutate(IndexHoppingReads = TotalReadsPerASV*fit$coefficients) %>%  ## maybe the slope should be X100??? anyways the # of reads removed would still be very very small (<1 per ASV per sample in most cases)
+  mutate(reads_IndexHop_removed = reads - IndexHoppingReads) %>%
+  mutate(reads_IndexHop_removed = if_else(reads_IndexHop_removed < 0, 0, reads_IndexHop_removed))
+head(indexhop_table_version2)
+```
+
+okay this lm slope coefficient is so small that <1 read is being removed from ASVs in a given sample. so this method doesn't really do anything. i will stick with the subtracting the max proportion of reads for each ASV found in the PC from all samples.   
 
 clean up the table by removing columns no longer needed 
 ```{r}
 asv_table_filter1 <- indexhop_table %>%
   dplyr::select(Sample_ID, sample_type, ASV, reads_IndexHop_removed) %>%
   dplyr::rename(reads = reads_IndexHop_removed)
-head(asv_table_filter1)
 ```
 
 this is a summary of the number of reads removed by ASV and sample_ID
@@ -172,14 +387,89 @@ prop_removed_1 <- prop_asvs_in_positives %>%
 head(prop_removed_1)
 ```
 
-ASV16 is sturgeon (the positive control). 
+ASV16, ASV158 and ASV227 are sturgeon (the positive control). 
+
+okay, just to be clear. subtracting the max proportion of ASVs found in the positive controls from the enivornmental samples and negative controls accounts for tag-jumping. but the subtraction of max proportion of ASVs found in the positive controls from the positive controls just gets rid of the reads in PC completely.  which i think is okay... 
 
 
-# 2. Discard PCR replicates with low numbers of reads 
+# 2. Account for contaminants in positive and negative controls 
+
+next we will remove ASVs that only occur in controls and not in environmental samples. and then we will subtract the maximum number of reads from ASVs found in the controls from all samples. i will start by working with the extraction negatives, pcr negatives, and positive controls (though there should not really be too many reads left in positives after step 1). 
+
+let's start by taking a look at what reads remain in these controls 
+```{r}
+asv_table_filter1 %>%
+  filter(sample_type != "sample") %>%
+  filter(sample_type != "field_blank") %>%
+  ggplot(aes(x=Sample_ID, y=reads, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "number of sequencing reads",
+    x = "sample ID",
+    title = "ASV reads - controls") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+number of reads
+```{r}
+tempA <- asv_table_filter1 %>%
+  group_by(ASV, sample_type) %>%
+  summarize(TotalReadsPerASV = sum(reads)) %>%
+  arrange(ASV)
+```
+
+what ASVs have no reads in samples, but reads in the controls? 
+```{r}
+tempB <- tempA %>%
+  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV")) %>%
+    filter(sample < 1)
+head(tempB)
+```
+
+remove these from the data frame 
+```{r}
+asv_table_filter1.5 <- asv_table_filter1 %>%
+  filter(!ASV %in% tempB$ASV)
+```
+
+calculate the maximum number of reads in an ASV to still show up in an extraction or PCR control 
+```{r}
+reads_to_remove_per_ASV <- asv_table_filter1.5 %>%
+  filter(sample_type == "extraction_blank"| sample_type == "PCR_blank") %>%
+  group_by(ASV) %>%
+  summarize(max_reads = max(reads))
+
+reads_to_remove_per_sample <- asv_table_filter1.5 %>%
+  left_join(reads_to_remove_per_ASV, by = "ASV") %>%
+  mutate(read_minus_contamination = reads - max_reads) %>%
+  mutate(read_minus_contamination = if_else(read_minus_contamination < 0, 0, read_minus_contamination))
+```
+
+filter the data frame 
+```{r}
+asv_table_filter2 <- reads_to_remove_per_sample %>%
+  select(!reads) %>%
+  select(!max_reads) %>%
+  rename(reads = read_minus_contamination)
+```
+
+number of ASVs remaining
+```{r}
+length(unique(asv_table_filter2$ASV)) 
+```
+
+# 3. Discard PCR replicates with low numbers of reads 
 
 calculate reads per sample
 ```{r}
-all_reads <- asv_table_filter1 %>%
+all_reads <- asv_table_filter2 %>%
   group_by(Sample_ID) %>%
   summarize(ReadsPerSample = sum(reads))
 ```
@@ -213,7 +503,7 @@ outlierIDs <- outliers$Sample_ID
 
 which samples are removed because of the 2.5%/1000 reads threshold??
 ```{r}
-replicates_removed_2 <- asv_table_filter1 %>%
+replicates_removed_2 <- asv_table_filter2 %>%
   filter(Sample_ID %in% outlierIDs) %>%
   pivot_wider(names_from = "ASV", values_from = "reads")
 #head(replicates_removed_2)
@@ -246,7 +536,7 @@ double check that the probability threshold is appropriate. i.e. make sure no re
 
 filter the data frame 
 ```{r}
-asv_table_filter2 <- asv_table_filter1 %>%
+asv_table_filter3 <- asv_table_filter2 %>%
   filter(!Sample_ID %in% outlierIDs)
 ```
 
@@ -266,66 +556,10 @@ summary %>%
 
 did we lose any ASVs during this step? 
 ```{r}
-length(unique(asv_table_filter2$ASV)) 
-```
-Nope, 1859 is what we started with. 
-
-
-# 3. Account for contaminants in positive and negative controls 
-
-here we will remove ASVs that occur more frequently in positive and negative controls. 
-
-since decontamination step 2 removed all the positive and many negative controls, i will need to go back to the starting read data to identify these ASVs. 
-
-For each ASV, we calculate the maximum proportion, mean proportion, and total number of reads in all samples. While it's helpful to see the read proportions (and maybe i'll return to filtering by proportions sometime...), we will only remove ASVs that have maximum abundance in control replicate. 
-
-number of reads
-```{r}
-tempA <- asv_table_with_sample_type %>%
-  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
-  group_by(ASV, sample_type) %>%
-  summarize(TotalReadsPerASV = sum(reads)) %>%
-  arrange(ASV)
-```
-
-proportion of read
-```{r}
-tempB <-  asv_table_with_sample_type %>%
-  pivot_longer(cols = c(3:1861), names_to = "ASV", values_to = "reads") %>%
-  group_by(Sample_ID) %>%
-  mutate(TotalReadsPerSample = sum(reads)) %>%
-  mutate(Prop = reads/TotalReadsPerSample) %>%
-  group_by(sample_type, ASV) %>%
-  summarise(max_prop = max(Prop),
-            mean_prop = mean(Prop))
-```
-
-```{r}
-tempC <- tempA %>%
-  left_join(tempB, by = c("sample_type", "ASV")) %>%
-  pivot_wider(names_from = "sample_type", values_from = c("TotalReadsPerASV", "max_prop", "mean_prop"))
-```
-
-what ASVs have greater read numbers in positives or extraction blanks or pcr blanks or field blanks than samples? then remove any ASV that has a *total number of reads* greater in the controls than in real samples.
-```{r}
-tempD <- tempC %>%
-  filter(TotalReadsPerASV_positive_control > TotalReadsPerASV_sample | TotalReadsPerASV_extraction_blank > TotalReadsPerASV_sample | TotalReadsPerASV_PCR_blank > TotalReadsPerASV_sample | TotalReadsPerASV_field_blank > TotalReadsPerASV_sample)
-
-tempD
-
-asvs_to_remove <- tempD$ASV  #31 ASVs removed (from original count)
-```
-
-filter the data frame 
-```{r}
-asv_table_filter3 <- asv_table_filter2 %>%
-  filter(!ASV %in% asvs_to_remove)
-```
-
-number of ASVs remaining
-```{r}
 length(unique(asv_table_filter3$ASV)) 
 ```
+Nope, 1828 is what we had after step 2.  
+
 
 # 4. Hierarchical Occupancy Modeling 
 
@@ -392,7 +626,7 @@ sink()
 the first step is to format my data for the stan model - i need site information so will start by getting that from the metadata
 ```{r}
 sites <- metadata %>%
-  dplyr::select(Sample_ID, biological_replicate, pcr_replicate, location1)
+  dplyr::select(Sample_ID, biological_replicate, pcr_replicate, extraction_ID, location1)
 
 rep_table <- asv_table_filter3 %>%
   left_join(sites, by = "Sample_ID") %>%
@@ -402,12 +636,12 @@ rep_table <- asv_table_filter3 %>%
 occu_df <- rep_table %>%
   ungroup() %>%  
   mutate(reads = ifelse(reads > 0, 1, 0)) %>% # change counts to presence/absence
-  dplyr::select(ASV, location1, biological_replicate, pcr_replicate, reads) %>%
-  group_by(ASV, location1, biological_replicate) %>%
+  dplyr::select(ASV, location1, biological_replicate, pcr_replicate, extraction_ID, reads) %>%
+  group_by(ASV, location1, extraction_ID) %>%
   summarise(K = n(),  #count the number of rows for K 
             N = sum(reads)) %>% #sum the detections (now in reads column) for N 
   dplyr::rename(Site = location1,
-         BiologicalRep = biological_replicate) %>% ## just renaming so that it matches the naming used in the stan model
+         BiologicalRep = extraction_ID) %>% ## just renaming so that it matches the naming used in the stan model
   separate(ASV, into = c(NA, "Species"), sep = 3, remove = FALSE)
 
 occu_df$Species <- as.integer(occu_df$Species) #convert ASV to an integer
@@ -416,14 +650,17 @@ occu_df <- occu_df %>%
   arrange(Species)
 ```
 
+**NOTE: i set the extraction_ID as the biological replicate!!!** 
+
 running the occupancy model on this entire data set will take a VERY long time, so now I will reduce the data set down to the patterns of presence (many ASVs/species have identical patterns of presence, aka. pattern of technical reps)
 
 ```{r}
 pattern.of.replication <- rep_table %>%
   ungroup() %>%  
   mutate(reads = ifelse(reads > 0, 1, 0)) %>% # change counts to presence/absence
-  filter(!grepl("-2-", Sample_ID)) %>%    ## the extraction replicates are messing thing up right now... i need to code this better in the metadata/etc eventually 
-  dplyr::select(location1, biological_replicate, pcr_replicate, ASV, reads) %>%
+ # filter(!grepl("-2-", Sample_ID)) %>%    ## the extraction replicates are messing thing up right now... i need to code this better in the metadata/etc eventually 
+  #dplyr::select(location1, biological_replicate, pcr_replicate, ASV, reads) %>%
+  dplyr::select(location1, extraction_ID, pcr_replicate, ASV, reads) %>%
   pivot_wider(names_from = pcr_replicate, values_from = reads) %>%
   mutate(ndetections = A + B + C) %>%
   group_by(location1, ndetections, ASV) %>%
@@ -485,12 +722,12 @@ temp.df <- occu_df_subset
        
   #myHierarchicalStanResults <- tidy(tibble(as.data.frame(myHierarchicalModel)))
   
-  #write_rds(myHierarchicalStanResults, "occupancy_output_20230629.rds")  ## not that this version actually takes very long to rerun but anyways... 
+  #write_rds(myHierarchicalStanResults, "occupancy_output_20230707.rds")  ## not that this version actually takes very long to rerun but anyways... 
 ```
 
 
 ```{r}
-myHierarchicalStanResults <- read_rds("occupancy_output_20230629.rds")
+myHierarchicalStanResults <- read_rds("occupancy_output_20230707.rds")
 
   ## occupancy probabilities 
   myHierarchicalStanResults_occu <- myHierarchicalStanResults %>%
@@ -579,7 +816,7 @@ asv_table_filter4B %>%
   arrange(total_reads)
 ```
 
-hmm... two samples (e00309-C and e00582-B) now have very few reads after the previous filtering steps.  let's get rid of them now. 
+hmm... two samples (e00390-C and e00582-B) now have very few reads after the previous filtering steps.  let's get rid of them now. 
 ```{r}
 remove_5 <- c("e00390-C", "e00582-B")
 
@@ -591,35 +828,35 @@ instead of filtering by the biological replicates, i need to filter by the uniqu
 
 let me get the extraction_ID column from the metadata file... 
 ```{r}
-extraction_table <- metadata %>%
-  select(Sample_ID, extraction_ID)
+#extraction_table <- metadata %>%
+#  select(Sample_ID, extraction_ID)
 
-another_temp_table <- temp_table %>%
-  left_join(extraction_table, by = "Sample_ID")
+#another_temp_table <- temp_table %>%
+#  left_join(extraction_table, by = "Sample_ID")
 ```
 
 
 how many pcr replicates does each extraction replicate have? 
 ```{r}
-another_temp_table %>%
+temp_table %>%
   group_by(extraction_ID) %>%
   summarise(nrep = n_distinct(Sample_ID)) %>%
-  #filter(nrep == 2)  # there are 6 
-  filter(nrep == 1) # there is one - e00390
+  filter(nrep == 2)  # there are 6 
+  #filter(nrep == 1) # there is one - e00390
 ```
 
 okay, so there are 6 extraction_IDs with only 2 pcr replicates. and one extraction_ID with only 1 pcr replicate. 
 
 remove the extraction with only one pcr rep from the data frame
 ```{r}
-another_temp_table <- another_temp_table %>%
+temp_table <- temp_table %>%
   filter(extraction_ID != "e00390")
 ```
 
 
 first, i'll calculate an eDNA index
 ```{r}
-normalized <- another_temp_table %>%
+normalized <- temp_table %>%
   group_by(Sample_ID) %>%
   mutate(Tot = sum(reads),
          Prop_reads = reads/Tot) %>%
@@ -761,7 +998,7 @@ discard_centroid
 
 output the samples that pass this filter
 ```{r}
-asv_table_filter5 <- another_temp_table %>%
+asv_table_filter5 <- temp_table %>%
   unite(site_biorep, location1, biological_replicate, sep = "_", remove = FALSE) %>%
   unite(new_ID, site_biorep, pcr_replicate, sep = "-", remove = FALSE) %>%
   filter(!new_ID %in% discard_centroid)
@@ -773,7 +1010,7 @@ which extraction IDs had a pcr replicate with low similarity??
 to_discard <- data.frame(discard_centroid) %>%
   separate(discard_centroid, into = c("location1", "extraction_ID", "rep_ID"))
 
-removed_step5 <- another_temp_table %>%
+removed_step5 <- temp_table %>%
   filter(extraction_ID %in% to_discard$extraction_ID)
 ```
 
@@ -947,7 +1184,7 @@ compare the pre and post decontamination sample summaries
 
 save the post-decontamination table 
 ```{r}
-#write.csv(asv_table_filter5, "decontamination_output_20230630.csv", row.names = FALSE)
+#write.csv(asv_table_filter5, "decontamination_output_20230707.csv", row.names = FALSE)
 ```
 
 
