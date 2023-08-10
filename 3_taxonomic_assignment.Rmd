@@ -368,5 +368,3 @@ output modified taxonomic ID table
 ```{r}
 write.csv(my_ids_5, "/home/kimberly.ledger/GOApcod_2021/taxonomy_assignments.csv")
 ```
-
-
