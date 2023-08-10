@@ -1,0 +1,27 @@
+---
+title: "Site Map"
+author: "Kimberly Ledger"
+date: "2023-08-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+install packages 
+```{r}
+#install.packages('remotes')
+#library(remotes)
+#remotes::install_github("MikkoVihtakari/ggOceanMaps")
+
+library(ggOceanMaps)
+```
+
+```{r}
+map <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = TRUE)
+map
+```
+
+
+
