@@ -1,0 +1,370 @@
+---
+title: "determine taxonomic assignments for asvs"
+author: "Kimberly Ledger"
+date: "2023-07-12"
+output: github_document
+---
+
+- analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing runs    
+- samples are from the GOA pcod survey in 2021  
+- this script uses decontaminated read counts from my July 7th 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+load libraries
+```{r, warning=FALSE}
+library(tidyverse)
+```
+
+
+read in decontaminated sample table
+```{r}
+decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230707.csv") %>%
+  select(!sample_type) %>%   ## clean-up this table - remove irrelevant columns 
+  select(!loc.asv) %>%
+  select(!new_ID) %>%
+  select(!site_biorep)
+
+asv_summary <- decontam_reads %>%
+  group_by(ASV) %>%
+  summarize(reads = sum(reads)) %>%
+  arrange(desc(reads))
+```
+
+read in the taxonomic id's 
+```{r}
+taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_insect_0_9.csv") %>%
+  select(!X) %>%  ## classier set to 0.9 threshold
+  rename(ASV = representative)
+taxon_blastn <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_blastn_20230630.csv") %>%
+  select(!X) %>%
+  rename(ASV = qseqid)
+```
+
+
+join the taxon id's ti the ASVs in the decontaminated read dataset 
+```{r}
+my_asvs <- asv_summary$ASV
+
+join <- taxon_insect %>%
+  filter(ASV %in% my_asvs) %>%
+  left_join(taxon_blastn, by = "ASV")
+```
+
+compare insect vs blastn ids 
+```{r}
+join_taxon <- join %>%
+  select(ASV, taxon.x, rank, species.y, diff, taxon.y, taxonomic_level)
+```
+
+
+rename taxa with different scientific names in the blastn vs insect  
+- Polypera greeni is also called Liparis greeni 
+```{r}
+join_taxon <- join_taxon %>%
+   mutate(across(everything(), ~ifelse(. == "Polypera greeni", "Liparis greeni", .)))
+```
+
+what asvs do the taxonomies match? 
+```{r}
+matches <- join_taxon %>%
+  filter(taxon.x == taxon.y) %>%
+  select(!diff) %>%
+  select(!species.y) %>%
+  unique()
+
+matches_id <- matches %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+nrow(matches_id)
+```
+
+okay. just under half (92/196) of the asv's have matching blastn and insect ids... 
+
+what about the rest? 
+```{r}
+mismatches <- join_taxon %>%
+  filter(!ASV %in% matches$ASV) %>%
+  filter(!rank == "no rank") %>%
+  rename(taxon_insect = taxon.x,
+         rank_insect = rank, 
+         species_blastn = species.y,
+         diff_blastn = diff,
+         taxon_blastn = taxon.y, 
+         rank_blastn = taxonomic_level)
+
+#write.csv(mismatches, "/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_mismatches.csv")
+```
+
+
+can i remove species from this list that do not occur in the GOA???  
+- try out the rFishBase package - look for species in Pacific, Northeast Waters
+```{r}
+#remotes::install_github("ropensci/rfishbase")
+#library(rfishbase)
+```
+
+i'm having trouble installing rfishbase... going to just upload a species list i downloaded from fishbase for all Pacific, Northeast waters species. 
+```{r}
+in_range <- read.csv("/home/kimberly.ledger/GOApcod_2021/FishBase_Pacific_NE_SpeciesList.csv") %>%
+  mutate(taxon = paste(Genus, Species, sep = " "))
+```
+
+filter to keep only taxa that occur in the NE Pacific 
+```{r}
+mismatches_inrange <- mismatches %>%
+  filter(species_blastn %in% in_range$taxon)
+```
+
+look at what is "out of range" 
+```{r}
+out_of_range <- mismatches %>%
+  filter(!species_blastn %in% in_range$taxon) %>%
+  select(species_blastn) %>%
+  unique
+
+out_of_range
+```
+
+should any of these still be there?? - need to consult someone else here. 
+
+now, what asvs only have one species match? 
+```{r}
+one_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp == 1)
+
+one_spp <- mismatches_inrange %>%
+  filter(ASV %in% one_species_asv$ASV)
+
+one_spp_id <- one_spp %>%
+  select(ASV, species_blastn) %>%
+  mutate(rank = "species") %>%
+  rename(taxon = species_blastn)
+
+nrow(one_spp_id)
+```
+
+what asvs still have multiple matches? 
+```{r}
+many_species_asv <- mismatches_inrange %>%
+  group_by(ASV) %>%
+  summarize(n_spp = n()) %>%
+  filter(n_spp > 1)
+
+many_spp <- mismatches_inrange %>%
+  filter(ASV %in% many_species_asv$ASV)
+
+nrow(many_spp)
+```
+
+use the taxon blastn id for these 
+```{r}
+many_spp_id <- many_spp %>%
+  select(ASV, taxon_blastn, rank_blastn) %>%
+  unique() %>%
+  rename(rank = rank_blastn) %>%
+  rename(taxon = taxon_blastn)
+```
+
+manually change these next....  
+- ASV7 change to Gadus, genus   
+- ASV67 change to Gadus, genus   
+- ASV102 change to Ammodytes, genus   
+- AV126 change to Gadus, genus   
+
+to do later maybe... write code to identify if the taxon_blast id could be a higher taxonomic resolution (i.e. genus rather than family)
+```{r}
+#ASV7
+many_spp_id[3,2] <- "Gadus"
+many_spp_id[3,3] <- "genus"
+#ASV67
+many_spp_id[14,2] <- "Gadus"
+many_spp_id[14,3] <- "genus"
+#ASV102
+many_spp_id[21,2] <- "Ammodytes"
+many_spp_id[21,3] <- "genus"
+#ASV126
+many_spp_id[23,2] <- "Gadus"
+many_spp_id[23,3] <- "genus"
+```
+
+join all the id tables
+```{r}
+my_ids <- bind_rows(matches_id, one_spp_id, many_spp_id)
+```
+
+now join the read numbers 
+```{r}
+asv_w_id <- decontam_reads %>%
+  left_join(my_ids, by = "ASV")
+```
+
+find out what ASVs didn't get a taxon id and see if that was a big problem... 
+```{r}
+no_id <- asv_w_id %>%
+  filter(is.na(taxon)) %>%
+  group_by(ASV) %>%
+  summarize(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+
+no_id
+```
+
+most of these ASVs without taxonomic ids don't have very many reads... but let me take a closer looks at the top few (asvs with >10000 reads). 
+```{r}
+no_id_table <- join_taxon %>%
+  filter(ASV %in% no_id$ASV) %>%
+  dplyr::filter(rank != "no rank" | !is.na(taxon.y))
+```
+
+
+get the genus level insect ids
+```{r}
+no_id_table_genus <- no_id_table %>%
+  filter(rank == "genus")
+
+#use the genus id for all asvs with one row
+addback1 <- no_id_table_genus %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows == 1) %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+
+addback2 <- no_id_table_genus %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows > 1) %>%
+  select(ASV, taxon.y, taxonomic_level) %>%
+  unique() %>%
+  rename(taxon = taxon.y) %>%
+  rename(rank = taxonomic_level)
+```
+
+
+get the family level insect ids
+```{r}
+no_id_table_family <- no_id_table %>%
+  filter(rank == "family")
+
+#use the genus id for all asvs with one row
+addback3 <- no_id_table_family %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows == 1) %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+```
+
+get the suborder level insect ids
+```{r}
+no_id_table_suborder <- no_id_table %>%
+  filter(rank == "suborder")
+
+#bump up these ids to order level
+addback4 <- no_id_table_suborder %>%
+  mutate(taxon.x = if_else(taxon.x == "Clupeoidei", "Clupeiformes", taxon.x)) %>%
+  mutate(taxon.x = if_else(taxon.x == "Gadoidei", "Gadiformes", taxon.x)) %>%
+  mutate(taxon.x = if_else(taxon.x == "Cottioidei", "Perciformes", taxon.x)) %>%
+  mutate(new_rank = "order") %>%
+  select(ASV, taxon.x, new_rank) %>%
+  rename(taxon = taxon.x) %>%
+  rename(rank = new_rank)
+```
+
+get the tribe level insect ids
+```{r}
+no_id_table_tribe <- no_id_table %>%
+  filter(rank == "tribe")
+
+#bump up these ids to order level
+addback5 <- no_id_table_tribe %>%
+  mutate(taxon.x = if_else(taxon.x == "	Scombrini", "Scombridae", taxon.x)) %>%
+  mutate(new_rank = "family") %>%
+  select(ASV, taxon.x, new_rank) %>%
+  rename(taxon = taxon.x) %>%
+  rename(rank = new_rank)
+```
+
+join all the id tables
+```{r}
+my_ids_2 <- bind_rows(my_ids, addback1, addback2, addback3, addback4, addback5)
+```
+
+
+### get the full taxonomic info so i can group taxons by that instead of by the ABCs
+
+```{r}
+#install.packages('taxize')
+#library(taxize)
+```
+
+let's try and use the full taxonomies we already have from insect 
+```{r}
+taxonomies <- taxon_insect %>%
+  select(!ASV) %>%
+  select(!taxID) %>%
+  select(!score) %>%
+  group_by(taxon) %>%
+  unique()
+
+my_ids_3 <- my_ids_2 %>%
+  left_join(taxonomies, by = "taxon")
+
+my_ids_3_missing <- my_ids_3 %>%
+  filter(is.na(kingdom))
+
+missing_spp <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "species") %>%
+  select(species:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_genus <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "genus") %>%
+  select(genus:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_family <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "family") %>%
+  select(family:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_order <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "order") %>%
+  select(order:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_combined <- bind_rows(missing_spp, missing_genus, missing_family, missing_order) %>%
+  rename(rank = taxonomic_level)
+
+taxonomies_combined <- bind_rows(taxonomies, missing_combined)
+
+my_ids_4 <- my_ids_2 %>%
+  left_join(taxonomies_combined, by = "taxon")
+
+#now just 'Liparis greeni' and 'Gymnocanthus galeatus" and "Clupeiformes" are missing 
+missing_taxon <- data.frame(taxon = c('Liparis greeni', 'Gymnocanthus galeatus', 'Clupeiformes', "Ammodytes personatus"), rank = c("species", "species", "order", "species"), kingdom = c("Metazoa", "Metazoa", "Metazoa","Metazoa"), phylum = c("Chordata", "Chordata", "Chordata", "Chordata"), class = c("Actinopteri", "Actinopteri", "Actinopteri", "Actinopteri"), order = c("Perciformes", "Perciformes", "Clupeiformes", "Perciformes"), family = c("Liparidae", "Cottidae", NA, "Ammodytidae"), genus = c("Liparis", "Gymnocanthus", NA, "Ammodytes"), species = c("Liparis greeni", "Gymnocanthus galeatus", NA, "Ammodytes personatus"))   
+
+
+taxonomies_combined_again <- bind_rows(taxonomies, missing_combined, missing_taxon)
+
+my_ids_5 <- my_ids_2 %>%
+  left_join(taxonomies_combined_again, by = "taxon") %>%
+  select(!rank.y) %>%
+  rename(rank = rank.x)
+```
+
+
+output modified taxonomic ID table
+```{r}
+write.csv(my_ids_5, "/home/kimberly.ledger/GOApcod_2021/taxonomy_assignments.csv")
+```
