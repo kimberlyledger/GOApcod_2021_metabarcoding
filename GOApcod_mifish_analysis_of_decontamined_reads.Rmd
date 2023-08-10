@@ -1,13 +1,13 @@
 ---
-title: "asv analysis of GOA pcod 2021 samples using MiFish"
+title: "determine taxonomic assignments for asvs"
 author: "Kimberly Ledger"
-date: "2023-07-05"
+date: "2023-07-12"
 output: github_document
 ---
 
 - analysis of mifish sequences from May 9 2023 and May 12 2023 sequencing runs    
 - samples are from the GOA pcod survey in 2021  
-- this script uses decontaminated read counts from my June 30 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
+- this script uses decontaminated read counts from my July 7th 2023 run of "ASV_decontamination_GOApcod_NEW.Rmd"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -16,32 +16,12 @@ knitr::opts_chunk$set(echo = TRUE)
 load libraries
 ```{r, warning=FALSE}
 library(tidyverse)
-library(ggplot2)
 ```
 
-read in sample metadata
-```{r}
-metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
-
-#illumina output changed "_" to "-"
-metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
-```
-
-read in taxonomic identification  
-- for now using insect IDs and blastn taxonomy with 1% similarity threshold
-```{r}
-taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_full_taxonomy_insect.csv") %>%
-  select(!X) %>%
-  dplyr::rename(ASV = representative)
-
-taxon_blastn <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_blastn_20230630.csv") %>%
-  select(!X) %>%
-  dplyr::rename(ASV = qseqid)
-```
 
 read in decontaminated sample table
 ```{r}
-decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230630.csv") %>%
+decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230707.csv") %>%
   select(!sample_type) %>%   ## clean-up this table - remove irrelevant columns 
   select(!loc.asv) %>%
   select(!new_ID) %>%
@@ -52,6 +32,17 @@ asv_summary <- decontam_reads %>%
   summarize(reads = sum(reads)) %>%
   arrange(desc(reads))
 ```
+
+read in the taxonomic id's 
+```{r}
+taxon_insect <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_insect_0_9.csv") %>%
+  select(!X) %>%  ## classier set to 0.9 threshold
+  rename(ASV = representative)
+taxon_blastn <- read.csv("/genetics/edna/workdir/GOApcod_2021/combined/trimmed/filtered/outputs/asv_taxonomy_blastn_20230630.csv") %>%
+  select(!X) %>%
+  rename(ASV = qseqid)
+```
+
 
 join the taxon id's ti the ASVs in the decontaminated read dataset 
 ```{r}
@@ -91,7 +82,7 @@ matches_id <- matches %>%
 nrow(matches_id)
 ```
 
-okay. just under half (93/196) of the asv's have matching blastn and insect ids... 
+okay. just under half (92/196) of the asv's have matching blastn and insect ids... 
 
 what about the rest? 
 ```{r}
@@ -171,7 +162,7 @@ many_spp <- mismatches_inrange %>%
 nrow(many_spp)
 ```
 
-use the blastn id for these 
+use the taxon blastn id for these 
 ```{r}
 many_spp_id <- many_spp %>%
   select(ASV, taxon_blastn, rank_blastn) %>%
@@ -215,309 +206,167 @@ asv_w_id <- decontam_reads %>%
 
 find out what ASVs didn't get a taxon id and see if that was a big problem... 
 ```{r}
-asv_w_id %>%
+no_id <- asv_w_id %>%
   filter(is.na(taxon)) %>%
   group_by(ASV) %>%
   summarize(total_reads = sum(reads)) %>%
   arrange(desc(total_reads))
+
+no_id
 ```
 
 most of these ASVs without taxonomic ids don't have very many reads... but let me take a closer looks at the top few (asvs with >10000 reads). 
 ```{r}
-join_taxon %>%
-  filter(ASV == "ASV23")
+no_id_table <- join_taxon %>%
+  filter(ASV %in% no_id$ASV) %>%
+  dplyr::filter(rank != "no rank" | !is.na(taxon.y))
 ```
 
-okay, this is atlantic mackerel... not in range. tribe is above genus but below family/subfamily. let's go with that.   
 
+get the genus level insect ids
 ```{r}
-join_taxon %>%
-  filter(ASV == "ASV61")
-```
+no_id_table_genus <- no_id_table %>%
+  filter(rank == "genus")
 
-hmm.. not sure what to do here. for now, i'm going to remove this asv.  it may be Clupea pallasii - but this spp already has 2.5 million reads so 40,000 more may not be a big deal. 
-
-```{r}
-join_taxon %>%
-  filter(ASV == "ASV65")
-```
-
-keep this as Gadus... i wonder why the blastn id didn't return anything... 
-
-```{r}
-join_taxon %>%
-  filter(ASV == "ASV77")
-```
-
-keep this as Mallotus villosus... i wonder why insect gave this no rank... 
-
-
-```{r}
-join_taxon %>%
-  filter(ASV == "ASV101")
-```
-
-removing this one. 
-
-
-add these ids to 'my_id'
-```{r}
-asv23 <- join_taxon %>%
-  filter(ASV == "ASV23") %>%
+#use the genus id for all asvs with one row
+addback1 <- no_id_table_genus %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows == 1) %>%
   select(ASV, taxon.x, rank) %>%
   rename(taxon = taxon.x)
 
-asv65 <- join_taxon %>%
-  filter(ASV == "ASV65") %>%
-  select(ASV, taxon.x, rank) %>%
-  rename(taxon = taxon.x)
-
-asv77 <- join_taxon %>%
-  filter(ASV == "ASV77") %>%
-  select(ASV, taxon.y, rank) %>%
-  rename(taxon = taxon.y)
+addback2 <- no_id_table_genus %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows > 1) %>%
+  select(ASV, taxon.y, taxonomic_level) %>%
+  unique() %>%
+  rename(taxon = taxon.y) %>%
+  rename(rank = taxonomic_level)
 ```
 
+
+get the family level insect ids
+```{r}
+no_id_table_family <- no_id_table %>%
+  filter(rank == "family")
+
+#use the genus id for all asvs with one row
+addback3 <- no_id_table_family %>%
+  group_by(ASV) %>%
+  mutate(n_rows = n()) %>%
+  filter(n_rows == 1) %>%
+  select(ASV, taxon.x, rank) %>%
+  rename(taxon = taxon.x)
+```
+
+get the suborder level insect ids
+```{r}
+no_id_table_suborder <- no_id_table %>%
+  filter(rank == "suborder")
+
+#bump up these ids to order level
+addback4 <- no_id_table_suborder %>%
+  mutate(taxon.x = if_else(taxon.x == "Clupeoidei", "Clupeiformes", taxon.x)) %>%
+  mutate(taxon.x = if_else(taxon.x == "Gadoidei", "Gadiformes", taxon.x)) %>%
+  mutate(taxon.x = if_else(taxon.x == "Cottioidei", "Perciformes", taxon.x)) %>%
+  mutate(new_rank = "order") %>%
+  select(ASV, taxon.x, new_rank) %>%
+  rename(taxon = taxon.x) %>%
+  rename(rank = new_rank)
+```
+
+get the tribe level insect ids
+```{r}
+no_id_table_tribe <- no_id_table %>%
+  filter(rank == "tribe")
+
+#bump up these ids to order level
+addback5 <- no_id_table_tribe %>%
+  mutate(taxon.x = if_else(taxon.x == "	Scombrini", "Scombridae", taxon.x)) %>%
+  mutate(new_rank = "family") %>%
+  select(ASV, taxon.x, new_rank) %>%
+  rename(taxon = taxon.x) %>%
+  rename(rank = new_rank)
+```
 
 join all the id tables
 ```{r}
-my_ids_2 <- bind_rows(my_ids, asv23, asv65, asv77)
+my_ids_2 <- bind_rows(my_ids, addback1, addback2, addback3, addback4, addback5)
 ```
 
-now join the read numbers 
+
+### get the full taxonomic info so i can group taxons by that instead of by the ABCs
+
 ```{r}
-asv_w_id <- decontam_reads %>%
-  left_join(my_ids_2, by = "ASV")
+#install.packages('taxize')
+#library(taxize)
 ```
 
-now i will remove ASVs with no taxon ID 
+let's try and use the full taxonomies we already have from insect 
 ```{r}
-asv_w_id <- asv_w_id %>%
-  filter(!is.na(taxon)) 
-```
-
-plot the proportion of reads for a taxon assigning to individual ASV's 
-```{r echo=FALSE}
-asv_w_id %>%
+taxonomies <- taxon_insect %>%
+  select(!ASV) %>%
+  select(!taxID) %>%
+  select(!score) %>%
   group_by(taxon) %>%
-  filter(taxon != "NA") %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  ggplot(aes(x=taxon, y=prop, fill=ASV)) +
-  geom_bar(stat = "identity") + 
-    theme_bw() +
-  labs(
-    y = "proportion of sequencing reads",
-    x = "taxon",
-    title = "ASV proportions") + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.text = element_text(size = 8),
-    legend.key.size = unit(0.3, "cm"),
-    legend.position = "none",
-    legend.title = element_blank()
-  )
-```
-
-okay, so most taxa (especially species-level) are only made up of one ASV, while other taxa have several ASVs
-
-asv summary table - only keeping order and below because everything above that (i.e. class) is identical 
-```{r}
-#asv_id_table <- asv_w_id %>%
-#  #select(ASV, order, family, genus, species, taxon, reads) %>%
-#  select(ASV, taxon, reads) %>%
-#  group_by(taxon) %>%
-#  filter(taxon != "NA") %>%
-#  mutate(sum=sum(reads)) %>%
-#  mutate(prop = reads/sum) # %>%
-# # arrange(order, family, genus, species)
-```
-
-** can't do this unless i rejoin the full taxon information... 
-arrange taxons in a way that make sense instead of alphabetical 
-```{r}
-#asv_order <- asv_w_id %>%
-#  arrange(order, family, genus, species) %>%
-#  select(taxon) %>%
-#  unique
-```
-
-now, join taxon and asv tables (with decontaminated read counts)
-```{r}
-asv_id <- asv_w_id %>%
-  select(ASV, taxon)
-
-read_summary_wide <- asv_w_id %>%
-  group_by(Sample_ID, taxon) %>%
-  summarise(total_read_count = sum(reads)) %>%
-  pivot_wider(names_from = "taxon", values_from = "total_read_count") %>%
-  replace(is.na(.), 0)
-
-read_summary<- asv_w_id %>%
-  group_by(Sample_ID, taxon) %>%
-  summarise(reads = sum(reads))
-```
-
-join to metadata
-```{r}
-join <- metadata %>%
-  left_join(read_summary, by = c("Sample_ID")) %>%
-  filter(!is.na(reads))
-
-join$Sample_ID <- as.factor(join$Sample_ID)
-join$pcr_replicate <- as.factor(join$pcr_replicate)
-join$biological_replicate <- as.factor(join$biological_replicate)
-join$extraction_ID <- as.factor(join$extraction_ID)
-join$extraction_replicate <- as.factor(join$extraction_replicate)
-join$run <- as.factor(join$run)
-join$location1 <- as.factor(join$location1)
-join$sample_type <- as.factor(join$sample_type)
-join$taxon <- as.factor(join$taxon)
-
-#summary(join)
-```
-
-
-** need full taxonomic info to do this 
-relevel the taxon factor
-```{r}
-# desired_order <- asv_order$taxon
-# 
-# join_long <- join_long %>%
-#   mutate(taxon = factor(taxon, levels = desired_order))
-# 
-# levels(join_long$taxon)
-```
-
-make a table with taxons and total read counts 
-```{r}
-join %>%
-  group_by(taxon) %>%
-  summarise(total_reads = sum(reads)) %>%
-  arrange(desc(total_reads))
-```
-
-
-
-## now let's check out data! 
-
-take a quick first look at the library sizes (i.e. the number of reads) in each sample
-```{r}
-temp <- join %>%
-  group_by(Sample_ID) %>%
-  mutate(total_reads = sum(reads)) %>%
-  arrange(total_reads) %>%
   unique()
 
-temp$Index <- seq(nrow(temp))
+my_ids_3 <- my_ids_2 %>%
+  left_join(taxonomies, by = "taxon")
 
-ggplot(temp, aes(x=Index, y = total_reads)) + 
-         geom_point(alpha = 0.5)
+my_ids_3_missing <- my_ids_3 %>%
+  filter(is.na(kingdom))
+
+missing_spp <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "species") %>%
+  select(species:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_genus <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "genus") %>%
+  select(genus:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_family <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "family") %>%
+  select(family:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_order <- taxon_blastn %>%
+  filter(taxon %in% my_ids_3_missing$taxon) %>%
+  filter(taxonomic_level == "order") %>%
+  select(order:kingdom, taxonomic_level, taxon) %>%
+  unique()
+
+missing_combined <- bind_rows(missing_spp, missing_genus, missing_family, missing_order) %>%
+  rename(rank = taxonomic_level)
+
+taxonomies_combined <- bind_rows(taxonomies, missing_combined)
+
+my_ids_4 <- my_ids_2 %>%
+  left_join(taxonomies_combined, by = "taxon")
+
+#now just 'Liparis greeni' and 'Gymnocanthus galeatus" and "Clupeiformes" are missing 
+missing_taxon <- data.frame(taxon = c('Liparis greeni', 'Gymnocanthus galeatus', 'Clupeiformes', "Ammodytes personatus"), rank = c("species", "species", "order", "species"), kingdom = c("Metazoa", "Metazoa", "Metazoa","Metazoa"), phylum = c("Chordata", "Chordata", "Chordata", "Chordata"), class = c("Actinopteri", "Actinopteri", "Actinopteri", "Actinopteri"), order = c("Perciformes", "Perciformes", "Clupeiformes", "Perciformes"), family = c("Liparidae", "Cottidae", NA, "Ammodytidae"), genus = c("Liparis", "Gymnocanthus", NA, "Ammodytes"), species = c("Liparis greeni", "Gymnocanthus galeatus", NA, "Ammodytes personatus"))   
+
+
+taxonomies_combined_again <- bind_rows(taxonomies, missing_combined, missing_taxon)
+
+my_ids_5 <- my_ids_2 %>%
+  left_join(taxonomies_combined_again, by = "taxon") %>%
+  select(!rank.y) %>%
+  rename(rank = rank.x)
 ```
 
-remember, the read decontamination process already excluded samples/replicates with no or few reads
 
-alright, let me plot the legend for reference 
-```{r echo=FALSE}
-for_legend <- join %>%
-  ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
-  geom_bar(stat = "identity") + 
-  theme_bw() +
-  labs(
-    y = "sequencing reads",
-    x = "sample",
-    title = "PCR blanks") + 
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 0.95),
-    legend.text = element_text(size = 7),
-    legend.key.size = unit(0.2, "cm"),
-    legend.position = "right",
-    legend.title = element_blank()
-  )
-
-library(grid)
-library(gridExtra) 
-
-# Using the cowplot package
-legend <- cowplot::get_legend(for_legend)
-
-grid.newpage()
-grid.draw(legend)
-```
-
-okay, now i will summarize samples by location (remember part of the decontamination steps included removing outlier site replicates)
-
-i am calculating the mean read proportions at a site here 
+output modified taxonomic ID table
 ```{r}
-location_summary <- join %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  filter(sum > 1) %>%
-  group_by(location1, taxon) %>%
-  summarize(mean_prop = mean(prop))
-
-location_summary$location1 <- as.factor(location_summary$location1)
+write.csv(my_ids_5, "/home/kimberly.ledger/GOApcod_2021/taxonomy_assignments.csv")
 ```
 
-```{r}
-location_summary %>%
-  ggplot(aes(x=location1, y=mean_prop, fill=taxon)) +
-  geom_bar(stat = "identity") + 
-  theme_bw() +
-  labs(
-    y = "proportion of sequencing reads",
-    x = "location",
-    title = "proportion of reads") + 
-  theme(
-    axis.text.x=element_text(angle = 90, hjust = 0.95), #remove x axis labels
-    legend.text = element_text(size = 8),
-    legend.key.size = unit(0.3, "cm"),
-    legend.position = "none",
-    legend.title = element_blank(),
-  )
-```
 
-## now let's take a look at reads from all of the samples 
-```{r echo=FALSE}
-join %>%
-  ggplot(aes(x=Sample_ID, y=reads, fill=taxon)) +
-  geom_bar(stat = "identity") +
-  scale_y_sqrt() +
-  theme_bw() +
-  labs(
-    y = "sequencing reads",
-    x = "sample",
-    title = "number of reads") +
-  theme(
-    axis.text.x=element_blank(), #remove x axis labels
-    legend.text = element_text(size = 8),
-    legend.key.size = unit(0.3, "cm"),
-    legend.position = "none",
-    legend.title = element_blank(),
-  )
-```
-
-## and proportion of reads from the samples 
-
-```{r echo=FALSE}
-join %>%
-  filter(sample_type == "sample") %>%
-  group_by(Sample_ID) %>%
-  mutate(sum=sum(reads)) %>%
-  mutate(prop = reads/sum) %>%
-  ggplot(aes(x=Sample_ID, y=prop, fill=taxon)) +
-  geom_bar(stat = "identity") +
-  theme_bw() +
-  labs(
-    y = "proportion of sequencing reads",
-    x = "sample",
-    title = "proportion of reads") +
-  theme(
-    axis.text.x=element_blank(), #remove x axis labels
-    legend.text = element_text(size = 8),
-    legend.key.size = unit(0.3, "cm"),
-    legend.position = "none",
-    legend.title = element_blank(),
-  )
-```

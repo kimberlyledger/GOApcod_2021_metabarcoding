@@ -1,0 +1,412 @@
+---
+title: "GOA pcod 2021 samples"
+author: "Kimberly Ledger"
+date: "2023-08-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+load libraries
+```{r, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(vegan)
+library(treemapify)
+library(RColorBrewer)     
+```
+
+read in sample metadata
+```{r}
+metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
+
+#illumina output changed "_" to "-"
+metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
+```
+
+read in decontaminated sample table
+```{r}
+decontam_reads <- read.csv("/home/kimberly.ledger/GOApcod_2021/decontamination_output_20230707.csv") %>%
+  select(!sample_type) %>%   ## clean-up this table - remove irrelevant columns 
+  select(!loc.asv) %>%
+  select(!new_ID) %>%
+  select(!site_biorep)
+```
+
+```{r}
+taxonomy <- read.csv("/home/kimberly.ledger/GOApcod_2021/taxonomy_assignments.csv") %>%
+  select(!X)
+```
+
+
+now join the decontaminated read numbers with taxonomic assignments 
+```{r}
+asv_w_id <- decontam_reads %>%
+  left_join(taxonomy, by = "ASV")
+```
+
+and remove ASVs with no taxon ID 
+```{r}
+asv_w_id <- asv_w_id %>%
+  filter(!is.na(taxon)) 
+```
+
+plot the proportion of reads for a taxon assigning to individual ASV's 
+```{r echo=FALSE}
+asv_w_id %>%
+  group_by(taxon) %>%
+  filter(taxon != "NA") %>%
+  mutate(sum=sum(reads)) %>%
+  mutate(prop = reads/sum) %>%
+  ggplot(aes(x=taxon, y=prop, fill=ASV)) +
+  geom_bar(stat = "identity") + 
+    theme_bw() +
+  labs(
+    y = "proportion of sequencing reads",
+    x = "taxon",
+    title = "ASV proportions") + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.95),
+    legend.text = element_text(size = 8),
+    legend.key.size = unit(0.3, "cm"),
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+```
+
+okay, so most taxa (especially species-level) are only made up of one ASV, while other taxa have several ASVs
+
+asv summary table - only keeping order and below because everything above that (i.e. class) is identical 
+```{r}
+asv_id_table <- asv_w_id %>%
+ select(ASV, order, family, genus, species, taxon, reads) %>%
+ #select(ASV, taxon, reads) %>%
+ group_by(taxon) %>%
+ filter(taxon != "NA") %>%
+ mutate(sum=sum(reads)) %>%
+ mutate(prop = reads/sum) %>%
+ arrange(order, family, genus, species)
+```
+
+arrange taxons by taxonomy instead of alphabetical 
+```{r}
+asv_order <- asv_w_id %>%
+ arrange(order, family, genus, species) %>%
+ select(taxon) %>%
+ unique()
+```
+
+change to factors... maybe want to join more metadata here. for now i'm just using what's already in the tables 
+```{r}
+asv_w_id$Sample_ID <- as.factor(asv_w_id$Sample_ID)
+asv_w_id$ASV <- as.factor(asv_w_id$ASV)
+asv_w_id$pcr_replicate <- as.factor(asv_w_id$pcr_replicate)
+asv_w_id$biological_replicate <- as.factor(asv_w_id$biological_replicate)
+asv_w_id$extraction_ID <- as.factor(asv_w_id$extraction_ID)
+#asv_w_id$extraction_replicate <- as.factor(asv_w_id$extraction_replicate)
+#asv_w_id$run <- as.factor(asv_w_id$run)
+asv_w_id$location1 <- as.factor(asv_w_id$location1)
+#asv_w_id$sample_type <- as.factor(asv_w_id$sample_type)
+asv_w_id$taxon <- as.factor(asv_w_id$taxon)
+
+summary(asv_w_id)
+```
+
+
+relevel the taxon factor
+```{r}
+desired_order <- asv_order$taxon
+
+asv_w_id <- asv_w_id %>%
+  mutate(taxon = factor(taxon, levels = desired_order))
+
+#levels(asv_w_id$taxon)
+```
+
+make a table with taxons and total read counts 
+```{r}
+asv_w_id %>%
+  group_by(taxon) %>%
+  summarise(total_reads = sum(reads)) %>%
+  arrange(desc(total_reads))
+```
+
+how many taxa and reads are assigned to each taxonomic rank? 
+```{r}
+asv_w_id %>%
+  group_by(rank) %>%
+  summarize(n_taxa = n_distinct(taxon),
+            n_reads = sum(reads))
+```
+
+okay well operating at the genus level would encompass 55/66 (83%) of the taxa and 90% of the reads.
+not sure if i should do this though.... 
+
+list of things i might want to calculate with this dataset (just using the eDNA results and not incorporation any catch/environmental data just yet)
+
+1- Alpha diversity: total species richness for each site (then compare sites using an ANOVA)
+* this will surely be influenced by the different taxonomic ranks in the data set... 
+
+```{r}
+richness <- asv_w_id %>%
+  group_by(location1) %>%
+  summarize(richness = n_distinct(taxon)) 
+
+summary(richness$richness)
+```
+
+this version just considers richness at the genus level (ranks above genus are grouped as one..)
+```{r}
+richness_genus <- asv_w_id %>%
+  group_by(location1, genus) %>%
+  summarize(richness = n_distinct(taxon)) %>%
+  group_by(location1) %>%
+  summarize(genus.richness = n_distinct(genus))
+
+summary(richness_genus$genus.richness)
+```
+
+okay, since i have 83 different sites it doesn't make sense to compare richness between sites at this point in time... or maybe ever.  maybe an ANOVA would be useful if there is some way to group sites together(?)
+
+let's plot it for fun 
+```{r}
+richness.plot <- richness_genus %>%   
+ggplot(aes(x = location1, y= genus.richness)) +
+  geom_point() +
+  lims (y= c(0,max(richness_genus$genus.richness))) +
+  labs (y = "Genus richness")
+richness.plot
+```
+
+
+
+NEXT - rarify read count to account for uneven sampling between samples 
+
+reformat data 
+```{r}
+# arrange by sample id 
+asv_w_id <- asv_w_id %>%
+  arrange(Sample_ID)
+
+#for rarefaction i need taxa in the columns and samples in rows 
+ASV_table <- asv_w_id %>%
+  group_by(Sample_ID, taxon) %>%
+  summarize(total_reads = sum(reads)) %>%
+  pivot_wider(names_from = "taxon", values_from = "total_reads")
+
+ids <- as.character(ASV_table$Sample_ID)
+ASV_table <- ASV_table[,-1]
+
+ASV_table[is.na(ASV_table)] <- 0
+ASV_table <- as.data.frame(lapply(ASV_table, as.integer))
+rownames(ASV_table) <- ids
+
+#save metadata associated with ASV_table
+rrMeta <- metadata %>%
+  arrange(Sample_ID) %>%
+  filter(Sample_ID %in% ids)
+```
+
+plot a rarefraction curve using read counts - not sure what's going here... 
+```{r}
+#rarefraction_result <- rarecurve(ASV_table)
+#plot(rarefraction_result, col = "blue", lwd = 2, xlab = "Sample Size", ylab = "Species Richness")
+```
+
+rarify read counts 
+```{r}
+rr_ASV <- as.data.frame(rrarefy(ASV_table, sample = min(rowSums(ASV_table))))
+```
+
+do i lose any taxa by doing this?? 
+```{r}
+colSums(rr_ASV)
+```
+
+nope, all are still >0 
+
+2- test for differences among fish communities based on read count transformed to eDNA index score (i.e. Bray-Curtis similarity distances on eDNA index scores)
+
+- calculate variance in fish communities at different hierarchical levels
+  * among geographic zones (not exactly sure what this would be but perhaps make 5ish groups)
+  * among geographic sites (N = 83) - is this too many to compare??
+  * among biological replicates taken at a site/sampling event (N = 3)
+  * among extraction replicates taken from biological replicates (N = 2; only for subset of samples)
+  * among PCR replicates on biological replicates (N = 3 or 6; depending on if there were extraction replicates)
+  ** use PERMANOVA test on Bray-Curtis (ASV read count data) dissimilarity across replicates - check if variance among PCR reps and biological reps was relatively small compared to sampling events/sites 
+  ** also use pres/abs matrix (jaccard similarity) later on??? 
+
+first let me use the eDNA index function from: https://github.com/ramongallego/eDNA.and.Ocean.Acidification.Gallego.et.al.2020/blob/master/Scripts/eDNAindex.R
+
+before i can use the function, i need to reformat the rr_ASV table into long format and rejoin with some metadata
+```{r}
+rr_ASV$Sample_ID <- ids
+rr_ASV_long <- rr_ASV %>%
+  pivot_longer(cols = c(1:66), names_to = "taxon", values_to = "rr_reads") %>%
+  left_join(rrMeta, by = "Sample_ID")
+```
+
+```{r}
+index_table <- rr_ASV_long %>%
+  eDNAindex(Sample_column = Sample_ID,
+            OTU_column = taxon,
+            Counts_column = rr_reads,
+            Biological.replicate = biological_replicate)
+```
+
+okay, now that the eDNA index has been calculated, let's get the data back in the format for distance matrices
+```{r}
+index_table_wide <- index_table %>%
+  pivot_wider(names_from = "taxon", values_from = "Normalized.reads")
+
+ids <- index_table_wide$Sample_ID
+index_table_wide <- index_table_wide[,-1]
+rownames(index_table_wide) <- ids
+```
+
+## create distance matrices 
+```{r}
+rr_ASV <- rr_ASV %>%
+  select(!Sample_ID)
+
+count.distance <- as.matrix(vegdist(rr_ASV, method = "bray", diag = F, upper = F, binary = F))
+index.distance <- as.matrix(vegdist(index_table_wide, method = "bray", diag = F, upper = F, binary = F))
+```
+
+
+## apportioning variance - using adonis2() PEMANOVA (vegan)
+order of rows need to match for this to work. i think they do but might want to double check... 
+```{r}
+count.adonis <- adonis2(count.distance~rrMeta$location1+rrMeta$biological_replicate+rrMeta$pcr_replicate)
+index.adonis <- adonis2(index.distance~rrMeta$location1+rrMeta$biological_replicate+rrMeta$pcr_replicate)
+count.adonis
+index.adonis
+```
+
+results look pretty similar for the two methods... 
+
+plot read count adonis results 
+```{r}
+q<-as.data.frame(count.adonis)
+        row.names(q)<-c("Site", "Biological Rep", "PCR Rep", "Residuals", "Total")
+        q<-data.frame(row.names(q), q)
+        names(q)[1]<-"Level"
+        q<-q[-which(row.names(q)=="Total"),]
+        q$Level<-paste(q$Level, "\n",
+                       round(q$R2,2), " (", q$Pr..F., ")", 
+                       sep="")
+        
+q0.plot<-ggplot(q, aes(area = R2, label=Level))+
+  geom_treemap(fill=brewer.pal(6, "Blues")[2:5], color=1, alpha=.8)+
+  geom_treemap_text(colour = "black", place = "centre", grow = FALSE, size=10)+
+  ggtitle("A -- All Sites")+
+  theme(aspect.ratio=1/1.618, plot.margin = margin(2, 2, -2, 2, "pt"), plot.background = element_blank())
+
+q0.plot 
+```
+
+plot eDNA index adonis results 
+```{r}
+q <-as.data.frame(index.adonis)
+        row.names(q)<-c("Site", "Biological Rep", "PCR Rep", "Residuals", "Total")
+        q<-data.frame(row.names(q), q)
+        names(q)[1]<-"Level"
+        q<-q[-which(row.names(q)=="Total"),]
+        q$Level<-paste(q$Level, "\n",
+                       round(q$R2,2), " (", q$Pr..F., ")", 
+                       sep="")
+        
+q1.plot<-ggplot(q, aes(area = R2, label=Level))+
+  geom_treemap(fill=brewer.pal(6, "Blues")[2:5], color=1, alpha=.8)+
+  geom_treemap_text(colour = "black", place = "centre", grow = FALSE, size=10)+
+  ggtitle("A -- All Sites")+
+  theme(aspect.ratio=1/1.618, plot.margin = margin(2, 2, -2, 2, "pt"), plot.background = element_blank())
+
+q1.plot 
+```
+
+so i think that this is telling me that most of the variation in the data is at the level of the biological replicate. not exactly sure what this means for our ability to analyze the data... 
+** should also do this using jaccard (pres/abs)
+
+maybe trye: multivariate homogeneity of group dispersions BETADISPER
+
+visualize using NMDS/CAP (constrained analysis of principle components) - see if there are any (and how many) distinct ecological communities are present - if so, then test for association of those communities with geography, other variables   
+  
+## NMDS 
+
+```{r}
+count.nmds <- metaMDS(count.distance, diag=T, upper.tri=T, trymax=1000, trace=0)
+#index.nmds <- metaMDS(index.distance, diag=T, upper.tri=T, trymax=1000, trace=0)
+
+#ordinate() is from phyloseq... not sure i want to convert my data into that format or not..
+##ord <- ordinate(count.distance, method = "NMDS")
+```
+
+
+```{r}
+nmds.results <- data.frame(count = scores(count.nmds),
+                           sample = row.names(scores(count.nmds)),
+                           rrMeta$location1, rrMeta$biological_replicate)
+```
+
+```{r}
+nmds.figure <- ggplot() + 
+  geom_polygon(data= nmds.results,aes(x=count.NMDS1,y=count.NMDS2,fill=rrMeta.location1,group=rrMeta.biological_replicate), alpha=0.3) +
+      geom_text(data= nmds.results,aes(x=count.NMDS1,y=count.NMDS2,label=rrMeta.location1),alpha=0.4,size=2)+
+      #scale_fill_manual(values = (c("navy", "skyblue"))) +
+      coord_equal() +
+      theme_bw() +
+      xlab("NMDS1") + ylab("NMDS2") +
+      #annotate("text", x=0.9*max(NMDS.RESULTS$OTU.count.NMDS1), y=0.9*max(NMDS.RESULTS$OTU.count.NMDS2),label="A")+
+      theme(axis.text.x = element_blank(),  # remove x-axis text
+            axis.text.y = element_blank(), # remove y-axis text
+            axis.ticks = element_blank(),  # remove axis ticks
+            axis.title.x = element_text(size=12), # remove x-axis labels
+            axis.title.y = element_text(size=12), # remove y-axis labels
+            panel.background = element_blank(), 
+            panel.grid.major = element_blank(),  #remove major-grid labels
+            panel.grid.minor = element_blank(),  #remove minor-grid labels
+            plot.background = element_blank(), 
+            legend.position = "right",
+            plot.title = element_text(hjust = 0.5),
+            plot.margin = margin(0,0,20,0, unit="pt"),
+            aspect.ratio = 1
+            )
+
+nmds.figure
+```
+
+lots of overlap in terms of fish communities across the sites. 
+
+try plotting a heat map of bray-curtis dissimilarity
+```{r}
+library(reshape2)
+distmat<-melt(count.distance)
+
+heatmap.figure <-ggplot(distmat, aes(Var1, Var2, fill=as.numeric(value)))+
+          geom_tile()+
+          xlab("Sample")+ylab("Sample")+
+          #annotate("text", x=83.7, y=83.7,label="B", color="white")+
+          guides(fill=guide_legend("Bray-Curtis\nDissimilarity"))+
+          scale_x_discrete(labels=substr(unique(distmat$Var1),1,2))+
+          scale_y_discrete(labels=substr(unique(distmat$Var1),1,2))+
+          theme(axis.text.x = element_text(angle=90, size=4),
+            axis.text.y = element_text(size=4),
+            panel.background = element_blank(),
+            plot.background = element_blank(),
+            aspect.ratio = 1
+            )
+heatmap.figure
+```
+
+hard to make sense of this heatmap... but again don't seem like there is any structure to sample dissimilarity
+
+so not sure if any community differences tests by certain environmental conditions will be very fruitful... but should resovle the different taxonomic ranks thing 
+
+other things to try
+- Constrained Analysis of Principle Components
+- 
+
+
