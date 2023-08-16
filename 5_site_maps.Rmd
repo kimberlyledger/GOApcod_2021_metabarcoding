@@ -14,14 +14,40 @@ install packages
 #install.packages('remotes')
 #library(remotes)
 #remotes::install_github("MikkoVihtakari/ggOceanMaps")
+install.packages('ggspatial')
 
 library(ggOceanMaps)
+library(ggspatial)
 ```
 
 ```{r}
 map <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = TRUE)
 map
 ```
+read in sample metadata
+```{r}
+metadata <- read.csv("/genetics/edna/workdir/GOApcod_2021/GOA2021_metadata_20230630.csv")
+
+#illumina output changed "_" to "-"
+metadata$Sample_ID <- gsub("_", "-", metadata$Sample_ID) 
+```
+
+get site info
+```{r}
+sites <- metadata %>%
+  select(location1, longitude, latitude) %>%
+  unique() %>%
+  filter(!is.na(longitude))
+```
+
+add sites to map 
+```{r}
+map_with_sites <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = TRUE) + 
+  ggspatial::geom_spatial_point(data = sites, aes(x = longitude, y = latitude), color = "red", size = 1)
+map_with_sites
+```
+
+save the order of sites from 
 
 
 
