@@ -2,7 +2,7 @@
 title: "Site Map"
 author: "Kimberly Ledger"
 date: "2023-08-10"
-output: html_document
+output: github_document
 ---
 
 ```{r setup, include=FALSE}
@@ -14,15 +14,16 @@ install packages
 #install.packages('remotes')
 #library(remotes)
 #remotes::install_github("MikkoVihtakari/ggOceanMaps")
-install.packages('ggspatial')
+#install.packages('ggspatial')
 
+library(tidyverse)
 library(ggOceanMaps)
 library(ggspatial)
 ```
 
 ```{r}
-map <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = TRUE)
-map
+#map <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = TRUE)
+#map
 ```
 read in sample metadata
 ```{r}
@@ -46,8 +47,6 @@ map_with_sites <- basemap(c(-163, -135, 53, 60.5), bathymetry = TRUE, rotate = T
   ggspatial::geom_spatial_point(data = sites, aes(x = longitude, y = latitude), color = "red", size = 1)
 map_with_sites
 ```
-
-save the order of sites from 
 
 
 
